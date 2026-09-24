@@ -41,17 +41,39 @@ the emergency.
 
 ## The two loops
 
-- **sleep** (~20 h, deliberately not 24): purge flagged, take the brief (or
-  pull one from recent short-terms with the small model), group short-terms
-  by topic, show the model each cluster with the nearest existing cores, and
-  submit one docket for the sleep. Short-terms a pending docket already holds
-  are left alone. Then the mechanical tidy: age out, maintain near-term,
-  sweep pruned.
+- **sleep** (~20 h, deliberately not 24, or daily at `sleep.at`): purge
+  flagged, take the brief (or pull one from recent short-terms with the
+  small model), group short-terms by topic, show the model each cluster with
+  the nearest existing cores, and submit one docket for the sleep.
+  Short-terms a pending docket already holds are left alone. Then the
+  mechanical tidy: age out, maintain near-term, sweep pruned.
 - **tend** (every few minutes): reviewed dockets with denied operations and
   no later attempt in their chain get redrafted and resubmitted.
 
 `sleep.mode: thread` runs both here; `external` means something else
 POSTs `/sleep` and `/tend` on a schedule.
+
+### When the sleep fires
+
+The next sleep is due one interval after the last one finished, or at the
+next `sleep.at` wall-clock time (local `HH:MM`) after it. A process that
+boots **overdue** - a fresh install, or a month with the computer off -
+sleeps after `warmup_seconds`, not a whole interval later.
+
+### The month away
+
+A sleep that comes after a gap longer than `gap_grace_intervals` intervals
+(or the first sleep ever on a store) is a **catch-up**. It drafts and purges
+like any other sleep, but it does not age out and does not sweep: nothing
+that never had its chance is gone before someone has looked. The report and
+the viewer say so. A sleep inside the grace window is a normal one.
+
+### Quiet
+
+A sleep with nothing free to draft from - no short-terms, or only ones a
+pending docket already holds - pulls no brief and calls no model. It purges
+what was flagged, tidies, and records itself as `quiet`. Leaving the
+computer on for a week you were not there costs nothing but the tidy.
 
 ## Mechanical mode
 
@@ -70,10 +92,11 @@ cp seren-hippocampus.yaml.sample ~/seren-hippocampus/seren-hippocampus.yaml
 python -m seren_hippocampus --config ~/seren-hippocampus/seren-hippocampus.yaml
 ```
 
-The config has four blocks: `server` (this service's bind and bearer),
+The config has five blocks: `server` (this service's bind and bearer),
 `memory` (where SerenMemory is and the bearer to present to it - the same
 three pointers as every server block), `model` (the small model's
-OpenAI-compatible endpoint), `sleep` (intervals, thresholds, attempts).
+OpenAI-compatible endpoint), `sleep` (intervals or a wall-clock time,
+thresholds, attempts, the catch-up grace), `notify` (below).
 Beyond loopback with no bearer the service refuses to start, like every
 Seren service.
 
@@ -86,6 +109,34 @@ Seren service.
 | `GET /status`  | last sleep and last tend, intervals                   |
 | `POST /sleep`  | run a sleep now (409 if one is running)               |
 | `POST /tend`   | pick up denied operations now                         |
+| `GET /queue`   | what is waiting for review, read from Memory          |
+| `GET /history` | the last runs, newest first                           |
+| `GET /events`  | what happened, newest first, and whether it was sent  |
+| `GET /viewer`  | the window (below)                                    |
+
+## Saying what happened
+
+Every sleep and tend leaves **events**: `docket_submitted` (with the docket
+id and its operation count), `sleep_failed`, `sleep_done`, `purged` (ids,
+never content), `tend_resubmitted`, `chain_ended`, `catch_up`. They are kept
+on the service (`GET /events`, the History tab) whatever else is configured.
+
+With `notify.webhook_url` set, each event in `notify.events` is POSTed as
+JSON with the configured bearer, best effort: a webhook that does not answer
+is recorded on the event and never fails the sleep. This is the seed of
+"shoot me a text": Lodestar, Symposium, or a messaging bridge sits at the
+other end and decides who to tell. Until something does, the reviewer pulls -
+`list_dockets` on Memory at the start of a session shows what is waiting.
+
+## The window
+
+`/viewer` is for whoever runs this and did not build it. It answers three
+questions on the shared Seren shell: did the sleep run (and when is the next
+one), what is waiting for review in Memory, and when it broke, what broke.
+Two buttons, Sleep now and Tend now, and a plain-words explanation of the
+state the service is in - Memory unreachable, mechanical mode, external mode,
+the last error. The accent is wisteria (`#c9a0dc`): a climber that hangs its
+blooms off a structure that was already there.
 
 ## Tests
 

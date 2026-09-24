@@ -1,0 +1,182 @@
+// ── SerenHippocampus viewer — leaf logic ─────────────────────────────────────
+// Snaps onto the SerenMeninges shell, which provides api() (same-origin, sends
+// the saved bearer), escapeHtml(), showTab() and the 🔑 token modal.
+//
+// The page answers three questions for someone who did not build the stack:
+// did the sleep run, what is waiting for review, and if it broke, what broke.
+
+const $ = (id) => document.getElementById(id);
+
+function relAge(ts) {
+    if (!ts) return '-';
+    const s = Math.round((Date.now() - ts * 1000) / 1000);
+    if (s < 0) return `in ${relSpan(-s)}`;
+    return `${relSpan(s)} ago`;
+}
+function relSpan(s) {
+    if (s < 60) return `${s}s`;
+    const m = Math.round(s / 60); if (m < 60) return `${m}m`;
+    const h = Math.round(m / 60); if (h < 48) return `${h}h`;
+    return `${Math.round(h / 24)}d`;
+}
+function fmtTs(ts) {
+    if (!ts) return '-';
+    const d = new Date(ts * 1000);
+    return `${d.toLocaleString()} (${relAge(ts)})`;
+}
+function showError(msg, hint) {
+    $('error-slot').innerHTML = `<div class="err">⚠ ${escapeHtml(msg)}${hint ? `<span class="hint">${escapeHtml(hint)}</span>` : ''}</div>`;
+}
+function clearError() { $('error-slot').innerHTML = ''; }
+
+// ----------------------------------------------------------------------------
+function renderPills(root, status) {
+    const mem = $('memoryBadge'), mod = $('modelBadge');
+    if (mem) { mem.textContent = root.memory_reachable ? 'memory: reachable' : 'memory: unreachable';
+               mem.className = 'head-pill' + (root.memory_reachable ? '' : ' hot'); }
+    if (mod) { mod.textContent = status.model_configured ? 'model: wired' : 'model: mechanical';
+               mod.className = 'head-pill'; }
+}
+
+function renderOverview(root, status, queue) {
+    const last = status.last_sleep || null;
+    const tend = status.last_tend || null;
+    const stat = (label, value, cls = '') =>
+        `<div class="stat ${cls}"><div class="big">${escapeHtml(value)}</div><div class="lbl">${escapeHtml(label)}</div></div>`;
+    const pendingOps = (queue.dockets || []).reduce((n, d) => n + (d.operations || []).filter(o => o.status === 'pending').length, 0);
+    $('stats').innerHTML = [
+        stat('last sleep', last ? (last.error ? 'failed' : 'ok') : 'never', last ? (last.error ? 'bad' : 'ok') : ''),
+        stat('when', last ? relAge(last.finished_at) : '-'),
+        stat('next sleep', status.next_sleep_at ? relAge(status.next_sleep_at) : (status.mode === 'external' ? 'external' : '-')),
+        stat('waiting for review', pendingOps, pendingOps ? 'ok' : ''),
+        stat('last tend', tend ? (tend.error ? 'failed' : `${(tend.resubmitted || []).length} resubmitted`) : 'never', tend && tend.error ? 'bad' : ''),
+    ].join('');
+
+    const lines = [];
+    if (!root.memory_reachable) lines.push(`<b>SerenMemory is not answering</b> at ${escapeHtml(root.memory)}. Nothing can sleep until it does: check that Memory is running, and that the bearer in this service's config is the one Memory was installed with.`);
+    if (last && last.error) lines.push(`The last sleep stopped with: <b>${escapeHtml(last.error)}</b>.`);
+    if (last && last.quiet && !last.error) lines.push(`The last sleep found <b>nothing new to draft from</b>, so no model was called; it only purged what was flagged and tidied.`);
+    if (last && last.catch_up && !last.error) lines.push(`The last sleep was a <b>catch-up</b> after a long gap${status.catch_up_next ? '' : ''}: it drafted and purged but aged nothing out, so anything that never had its chance is still there for review.`);
+    if (status.catch_up_next && !(last && last.catch_up)) lines.push(`The next sleep will be a <b>catch-up</b>: it has been a while, so it will draft but not age anything out.`);
+    if (status.sleep_at) lines.push(`Sleeps happen daily at <b>${escapeHtml(status.sleep_at)}</b> local time.`);
+    if (last && !last.error && !last.quiet) lines.push(`The last sleep purged ${last.purged} flagged memor${last.purged === 1 ? 'y' : 'ies'}, looked at ${last.clusters} topic${last.clusters === 1 ? '' : 's'}, and proposed ${last.operations} operation${last.operations === 1 ? '' : 's'}${last.docket_id ? ' in one docket' : ''}${last.held_back ? `; ${last.held_back} short-term memories were already waiting on an earlier docket` : ''}.`);
+    if (!status.model_configured) lines.push(`No small model is wired, so the hippocampus runs <b>mechanically</b>: topics with enough evidence become new cores, verbatim memories are kept as they are, and nothing is proposed as evidence for, or a replacement of, an existing memory - those are judgements.`);
+    if (status.mode === 'external') lines.push(`Mode is <b>external</b>: nothing here runs on a timer. Something else posts /sleep and /tend, or you press the buttons.`);
+    $('explain').innerHTML = lines.length ? lines.map(l => `<p class="hint">${l}</p>`).join('') : `<p class="hint">Quiet and healthy.</p>`;
+}
+
+function kvTable(obj, keys) {
+    return `<div class="kv">${keys.filter(k => obj[k] !== undefined && obj[k] !== null && !(typeof obj[k] === 'object'))
+        .map(k => `<span class="k">${escapeHtml(k.replace(/_/g, ' '))}</span><span class="v">${escapeHtml(k.endsWith('_at') ? fmtTs(obj[k]) : String(obj[k]))}</span>`).join('')}</div>`;
+}
+
+function renderReports(status) {
+    const s = status.last_sleep;
+    $('sleep-report').innerHTML = !s ? `<div class="empty">No sleep has run yet.</div>` :
+        `<div class="entry ${s.error ? 'bad' : ''}">${s.error ? `<div class="content"><b>Stopped:</b> ${escapeHtml(s.error)}</div>` : ''}
+            ${kvTable(s, ['started_at', 'finished_at', 'duration_seconds', 'quiet', 'catch_up', 'purged', 'brief_id', 'brief_pulled', 'clusters', 'operations', 'docket_id', 'held_back'])}
+            ${s.tidy ? `<div class="meta"><span class="badge">tidy</span> aged out ${s.tidy.aged_out ?? '-'} · near expired ${(s.tidy.near || {}).expired ?? '-'} · completed ${(s.tidy.near || {}).completed_promoted ?? '-'} · pruned swept ${s.tidy.pruned_swept ?? '-'}</div>` : ''}
+         </div>`;
+    const t = status.last_tend;
+    $('tend-report').innerHTML = !t ? `<div class="empty">No tend has run yet.</div>` :
+        `<div class="entry ${t.error ? 'bad' : ''}">${t.error ? `<div class="content"><b>Stopped:</b> ${escapeHtml(t.error)}</div>` : ''}
+            ${kvTable(t, ['started_at', 'finished_at', 'examined'])}
+            <div class="meta">${(t.resubmitted || []).length ? t.resubmitted.map(r => `<span class="badge pending">attempt ${r.attempt}</span> ${r.operations} op(s) · <code class="id">${escapeHtml(r.docket_id)}</code>`).join(' ') : 'nothing needed a redraft'}
+            ${(t.ended || []).length ? ` · <span class="badge denied">${t.ended.length} chain(s) ended</span>` : ''}</div>
+         </div>`;
+}
+
+function opCard(op) {
+    const kind = escapeHtml(op.kind);
+    const target = op.target_core_id ? ` <code class="id">→ ${escapeHtml(op.target_core_id)}</code>` : '';
+    return `<div class="op">
+        <div class="meta"><span class="badge ${escapeHtml(op.status)}">${escapeHtml(op.status)}</span><span class="badge">${kind}</span>${target}
+            ${op.evidence_count ? `<span>evidence ${escapeHtml(op.evidence_count)}</span>` : ''}</div>
+        <div class="content">${escapeHtml(op.content || '(attach: evidence only)')}</div>
+        ${op.restated_content ? `<div class="critique">restate the core as: ${escapeHtml(op.restated_content)}</div>` : ''}
+        ${op.rationale ? `<div class="critique">why: ${escapeHtml(op.rationale)}</div>` : ''}
+        ${op.critique ? `<div class="critique"><b>denied:</b> ${escapeHtml(op.critique)}</div>` : ''}
+    </div>`;
+}
+
+function docketCard(d) {
+    const pending = (d.operations || []).filter(o => o.status === 'pending').length;
+    return `<div class="entry">
+        <div class="meta"><span class="badge pending">${pending} waiting</span><span class="badge">attempt ${escapeHtml(d.attempt)}</span>
+            ${d.terminal ? '<span class="badge terminal">terminal</span>' : ''}<span>${escapeHtml(fmtTs(d.created_at))}</span><code class="id">${escapeHtml(d.id)}</code></div>
+        <div class="content">${escapeHtml(d.summary || '')}</div>
+        ${(d.operations || []).map(opCard).join('')}
+    </div>`;
+}
+
+function renderQueue(queue) {
+    if (queue.error) {
+        $('queue-list').innerHTML = `<div class="err">⚠ ${escapeHtml(queue.error)}<span class="hint">The queue lives in SerenMemory; this page could not read it.</span></div>`;
+        return;
+    }
+    const ds = queue.dockets || [];
+    $('queue-list').innerHTML = ds.length ? ds.map(docketCard).join('') : `<div class="empty">Nothing is waiting for review.</div>`;
+}
+
+function renderEvents(ev) {
+    const rows = ev.entries || [];
+    const el = $('events-list');
+    if (!el) return;
+    el.innerHTML = rows.length ? rows.map(e => `<div class="entry ${e.event === 'sleep_failed' ? 'bad' : ''}">
+        <div class="meta"><span class="badge ${e.event === 'sleep_failed' ? 'denied' : 'pending'}">${escapeHtml(e.event.replace(/_/g, ' '))}</span>
+            <span>${escapeHtml(fmtTs(e.at))}</span>
+            ${e.docket_id ? `<code class="id">${escapeHtml(e.docket_id)}</code>` : ''}
+            ${e.operations != null ? `<span>${escapeHtml(e.operations)} op(s)</span>` : ''}
+            ${e.count != null ? `<span>${escapeHtml(e.count)} purged</span>` : ''}
+            ${e.attempt != null ? `<span>attempt ${escapeHtml(e.attempt)}${e.terminal ? ' (terminal)' : ''}</span>` : ''}
+            ${ev.webhook ? `<span class="badge ${e.delivered ? 'approved' : (e.delivered === false ? 'denied' : '')}">${e.delivered ? 'sent' : (e.delivered === false ? 'not sent' : 'kept')}</span>` : ''}</div>
+        ${e.error ? `<div class="content">${escapeHtml(e.error)}</div>` : ''}
+        ${e.delivery_error ? `<div class="critique">webhook: ${escapeHtml(e.delivery_error)}</div>` : ''}
+    </div>`).join('') : `<div class="empty">Nothing has happened yet.</div>`;
+}
+
+function renderHistory(hist) {
+    const rows = (hist.entries || []);
+    $('history-list').innerHTML = rows.length ? rows.map(r => `<div class="entry ${r.error ? 'bad' : ''}">
+        <div class="meta"><span class="badge ${r.error ? 'denied' : 'approved'}">${escapeHtml(r.kind)}</span><span>${escapeHtml(fmtTs(r.finished_at))}</span>
+            <span>${escapeHtml(r.duration_seconds ?? '-')}s</span>${r.kind === 'sleep' ? `<span>${escapeHtml(r.operations ?? 0)} op(s) proposed, ${escapeHtml(r.purged ?? 0)} purged</span>` : `<span>${escapeHtml(r.resubmitted ?? 0)} resubmitted, ${escapeHtml(r.ended ?? 0)} chain(s) ended</span>`}</div>
+        ${r.error ? `<div class="content"><b>Stopped:</b> ${escapeHtml(r.error)}</div>` : ''}
+    </div>`).join('') : `<div class="empty">Nothing has run yet.</div>`;
+}
+
+// ----------------------------------------------------------------------------
+async function load() {
+    clearError();
+    let root = {}, status = {}, queue = { dockets: [] }, hist = { entries: [] }, events = { entries: [] };
+    try { root = await api('/'); } catch (e) { showError(`This service did not answer: ${e.message}`); return; }
+    try { root.memory_reachable = (await api('/health')).memory_reachable; } catch (e) { root.memory_reachable = false; }
+    try { status = await api('/status'); }
+    catch (e) { showError(`Could not read /status: ${e.message}`, 'If this service has a bearer token, set it via 🔑 Token.'); return; }
+    try { queue = await api('/queue'); } catch (e) { queue = { dockets: [], error: e.message }; }
+    try { hist = await api('/history'); } catch (e) { hist = { entries: [] }; }
+    try { events = await api('/events'); } catch (e) { events = { entries: [] }; }
+    renderPills(root, status);
+    renderOverview(root, status, queue);
+    renderReports(status);
+    renderQueue(queue);
+    renderHistory(hist);
+    renderEvents(events);
+}
+
+async function runNow(kind) {
+    const btn = $(`btn-${kind}`), out = $('action-result');
+    btn.disabled = true; out.textContent = `${kind}…`;
+    try {
+        const r = await api(`/${kind}`, { method: 'POST' });
+        out.textContent = r.error ? `${kind} stopped: ${r.error}` :
+            kind === 'sleep' ? `sleep done: ${r.operations} operation(s) proposed, ${r.purged} purged` :
+                               `tend done: ${(r.resubmitted || []).length} resubmitted`;
+    } catch (e) {
+        out.textContent = /409/.test(e.message) ? 'one is already running' : `failed: ${e.message}`;
+    } finally {
+        btn.disabled = false;
+        load();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', load);

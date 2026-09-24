@@ -36,9 +36,21 @@ model:
 sleep:
   mode: thread             # thread = loops in-process; external = POST /sleep and /tend yourself
   interval_seconds: 72000  # ~20h, not 24, on purpose: the window drifts through the day
+  # at: "03:30"            # or a wall-clock time (local HH:MM) instead of the interval
+  warmup_seconds: 300      # a process that boots overdue sleeps this soon, not a whole interval later
+  gap_grace_intervals: 3   # a sleep after a gap this long (x interval) drafts but does not age out or sweep
   tend_interval_seconds: 300
   max_entries_per_run: 500
   promote_min_evidence: 3  # short-terms a topic needs before it is proposed (hints, pins, verbatim override)
   max_attempts: 3          # dockets per chain before the last one is submitted terminal
   candidate_cores: 5       # existing cores shown to the model per cluster
   state_path: ~/.seren-hippocampus/state.json
+
+notify:
+  # Where to say that something happened. Events are always kept on the
+  # service (GET /events and the viewer); a webhook gets each one POSTed as
+  # JSON - Lodestar, Symposium, or a messaging bridge sits at the other end.
+  # webhook_url: http://127.0.0.1:6361/hooks/hippocampus
+  # bearer_token_env: SEREN_HIPPOCAMPUS_WEBHOOK_TOKEN
+  events: [docket_submitted, sleep_failed, chain_ended, purged]
+  timeout_seconds: 10

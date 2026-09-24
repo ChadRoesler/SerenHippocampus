@@ -1,0 +1,35 @@
+<!-- Four views on the shell's baseplate. This page exists so that someone who
+     did not build the stack can see what the sleep did last night, what is
+     waiting for review, and - when it broke - what broke and where. -->
+<section class="view" id="overview">
+    <div id="error-slot"></div>
+    <div class="stat-row" id="stats"></div>
+    <div class="card">
+        <div class="row-actions">
+            <button class="btn" id="btn-sleep" onclick="runNow('sleep')">Sleep now</button>
+            <button class="btn" id="btn-tend" onclick="runNow('tend')">Tend now</button>
+            <span class="hint" id="action-result"></span>
+        </div>
+        <p class="hint">A <b>sleep</b> reads the day's short-term memories and proposes what should become long-term. A <b>tend</b> picks up anything the reviewer sent back and tries again. Both are safe to press; a running one refuses a second.</p>
+    </div>
+    <div class="card" id="explain"></div>
+</section>
+
+<section class="view" id="sleep">
+    <div id="sleep-report"></div>
+    <h3 class="sub">Last tend</h3>
+    <div id="tend-report"></div>
+</section>
+
+<section class="view" id="queue">
+    <p class="hint">Dockets the hippocampus has proposed and the reviewer has not finished. Each operation is approved or denied on its own, in SerenMemory (its viewer, or the model through its tools). Nothing here changes long-term memory until it is approved.</p>
+    <div id="queue-list"></div>
+</section>
+
+<section class="view" id="history">
+    <p class="hint">The last sleeps and tends this service ran, newest first, with what each one did or why it stopped.</p>
+    <div id="history-list"></div>
+    <h3 class="sub">Events</h3>
+    <p class="hint">What the service told the world: a docket submitted, a sleep that failed, a chain that ended, a purge. With a webhook configured each one says whether it was delivered.</p>
+    <div id="events-list"></div>
+</section>

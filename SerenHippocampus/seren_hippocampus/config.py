@@ -84,8 +84,38 @@ class SleepConfig(BaseModel):
     # How many existing cores to show the model per cluster as attach /
     # supersede candidates.
     candidate_cores: int = 5
+    # Sleep at a wall-clock time instead of every interval_seconds: "03:30"
+    # (local time, HH:MM). Empty keeps the drifting interval. Either way a
+    # process that boots overdue sleeps after warmup_seconds, not a full
+    # interval later - a month with the computer off is not a month of waiting.
+    at: str = ""
+    warmup_seconds: int = 300
+    # A sleep that comes after a gap longer than this many intervals is a
+    # CATCH-UP: it drafts and purges but does not age out or sweep, so nothing
+    # that never had its chance is trashed before someone has looked.
+    gap_grace_intervals: float = 3.0
     # Where the hippocampus keeps its own last-run record (it has no store).
     state_path: str = "~/.seren-hippocampus/state.json"
+
+
+class NotifyConfig(BaseModel):
+    """Where to say that something happened. Events are always kept on the
+    service (GET /events); a webhook_url gets each one POSTed as JSON, best
+    effort, with the bearer below. This is the seed of "shoot me a text":
+    Lodestar, Symposium or a messaging bridge sits at the other end."""
+    webhook_url: str = ""
+    bearer_token: str = Field(default="", repr=False)
+    bearer_token_env: str = ""
+    bearer_token_keyring: str = ""
+    # Which events go out. Everything the service emits: docket_submitted,
+    # sleep_failed, sleep_done, tend_resubmitted, chain_ended, purged, catch_up.
+    events: list[str] = Field(default_factory=lambda: ["docket_submitted", "sleep_failed", "chain_ended", "purged"])
+    timeout_seconds: float = 10.0
+
+    def resolve_bearer(self) -> str:
+        return resolve_token(inline=self.bearer_token or None,
+                             keyring_ref=self.bearer_token_keyring or None,
+                             env_var=self.bearer_token_env or None)
 
 
 class UpdatesConfig(BaseModel):
@@ -102,6 +132,7 @@ class HippocampusConfig(BaseModel):
     memory: MemoryTarget = Field(default_factory=MemoryTarget)
     model: ModelConfig = Field(default_factory=ModelConfig)
     sleep: SleepConfig = Field(default_factory=SleepConfig)
+    notify: NotifyConfig = Field(default_factory=NotifyConfig)
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
 
     def resolved_state_path(self) -> Path:
@@ -171,6 +202,7 @@ def load_config(explicit_path: Optional[str] = None) -> HippocampusConfig:
         model=_block(ModelConfig, data.get("model"), "model"),      # type: ignore[arg-type]
         sleep=_block(SleepConfig, data.get("sleep"), "sleep"),      # type: ignore[arg-type]
         updates=_block(UpdatesConfig, data.get("updates"), "updates"),  # type: ignore[arg-type]
+        notify=_block(NotifyConfig, data.get("notify"), "notify"),      # type: ignore[arg-type]
     )
     off = os.getenv(f"{ENV_PREFIX}_UPDATES_ENABLED")
     if off is not None:

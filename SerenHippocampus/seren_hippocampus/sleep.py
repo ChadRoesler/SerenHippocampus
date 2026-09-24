@@ -57,12 +57,78 @@ class Busy(RuntimeError):
 
 
 class Hippocampus:
-    def __init__(self, cfg: HippocampusConfig, memory: MemoryClient, log=None):
+    def __init__(self, cfg: HippocampusConfig, memory: MemoryClient, log=None,
+                 notify_transport: Optional[httpx.BaseTransport] = None):
         self._cfg = cfg
         self._mem = memory
         self._log = log or (lambda m: print(f"[seren-hippocampus] {m}"))
         self._lock = threading.Lock()
+        self._notify_transport = notify_transport
         self.state: dict[str, Any] = self._load_state()
+
+    # ── when is the next sleep due ────────────────────────────────────────
+    def next_sleep_due(self, now: Optional[float] = None) -> float:
+        """The moment the next sleep should start. With sleep.at, the next
+        occurrence of that local time after the last sleep (today's if it has
+        not passed and there was no sleep yet today); otherwise last sleep +
+        interval. A due time already in the past means overdue: the caller
+        sleeps after warmup_seconds instead of waiting a whole interval."""
+        import datetime as _dt
+        now = time.time() if now is None else now
+        last = float(((self.state.get("last_sleep") or {}).get("finished_at")) or 0)
+        at = (self._cfg.sleep.at or "").strip()
+        if at:
+            try:
+                hh, mm = (int(x) for x in at.split(":", 1))
+            except ValueError:
+                self._log(f"sleep.at={at!r} is not HH:MM; using the interval")
+            else:
+                anchor = _dt.datetime.fromtimestamp(last if last else now)
+                due = anchor.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                if due.timestamp() <= (last if last else now - 1):
+                    due += _dt.timedelta(days=1)
+                return due.timestamp()
+        # No sleep on record (fresh install, or the state file went away): due
+        # now, which the caller turns into one warm-up, not a whole interval.
+        return last + self._cfg.sleep.interval_seconds if last else now
+
+    def seconds_until_sleep(self, now: Optional[float] = None) -> float:
+        now = time.time() if now is None else now
+        due = self.next_sleep_due(now)
+        if due <= now:
+            return float(self._cfg.sleep.warmup_seconds)      # overdue: soon, not a full interval
+        return due - now
+
+    def is_catch_up(self, now: Optional[float] = None) -> bool:
+        """A sleep after a gap longer than gap_grace_intervals * interval (or
+        the first sleep this service ever ran) must not trash what never had
+        its chance: draft and purge, but no age-out and no sweep."""
+        now = time.time() if now is None else now
+        last = float(((self.state.get("last_sleep") or {}).get("finished_at")) or 0)
+        if not last:
+            return True
+        return (now - last) > self._cfg.sleep.gap_grace_intervals * self._cfg.sleep.interval_seconds
+
+    # ── events (the seed of "shoot me a text") ────────────────────────────
+    def _emit(self, kind: str, **data: Any) -> None:
+        ev = {"event": kind, "at": time.time(), **data}
+        rows = list(self.state.get("events") or [])
+        rows.append(ev)
+        self.state["events"] = rows[-100:]
+        n = self._cfg.notify
+        if n.webhook_url and kind in (n.events or []):
+            try:
+                headers = {"Content-Type": "application/json"}
+                tok = n.resolve_bearer()
+                if tok:
+                    headers["Authorization"] = f"Bearer {tok}"
+                with httpx.Client(timeout=n.timeout_seconds, transport=self._notify_transport) as c:
+                    c.post(n.webhook_url, json={"service": "seren-hippocampus", **ev}, headers=headers)
+                ev["delivered"] = True
+            except Exception as e:  # noqa: BLE001 - a notification never fails a sleep
+                ev["delivered"] = False
+                ev["delivery_error"] = f"{type(e).__name__}: {e}"
+                self._log(f"webhook {kind} failed: {e}")
 
     # ── state (the only thing this service keeps) ─────────────────────────
     def _state_path(self) -> Path:
@@ -144,9 +210,11 @@ class Hippocampus:
     # ── sleep ─────────────────────────────────────────────────────────────
     def _sleep(self) -> dict[str, Any]:
         start = time.time()
+        catch_up = self.is_catch_up(start)
         report: dict[str, Any] = {"started_at": start, "purged": 0, "brief_id": None,
                                   "brief_pulled": False, "clusters": 0, "operations": 0,
-                                  "docket_id": None, "held_back": 0, "tidy": {}, "error": None}
+                                  "docket_id": None, "held_back": 0, "tidy": {}, "error": None,
+                                  "catch_up": catch_up, "quiet": False}
         try:
             # 1. what was flagged
             purged = self._mem.tidy(age_out=False, near=False, sweep=False, purge=True).get("purged") or []
@@ -154,9 +222,20 @@ class Hippocampus:
             if purged:
                 self._log(f"purged {len(purged)} flagged memories: " +
                           ", ".join(t.get("id", "?") for t in purged))
+                self._emit("purged", count=len(purged), ids=[t.get("id") for t in purged])
+            if catch_up:
+                last = ((self.state.get("last_sleep") or {}).get("finished_at"))
+                self._log("catch-up sleep: " + ("first sleep on this store" if not last else
+                          f"{round((start - last) / 3600)}h since the last one") + " - drafting, not aging out")
+                self._emit("catch_up", since=last)
 
-            # 2. the brief
-            brief = self._fresh_brief()
+            # A sleep with nothing free to draft from costs no model call.
+            free_now = [x for x in self._mem.shorts(limit=self._cfg.sleep.max_entries_per_run)
+                        if x["id"] not in self._held_short_ids()]
+            report["quiet"] = not free_now
+
+            # 2. the brief (not pulled when there is nothing to steer)
+            brief = None if report["quiet"] else self._fresh_brief()
             promote_hints: set[str] = set()
             noise_hints: set[str] = set()
             if brief:
@@ -186,17 +265,34 @@ class Hippocampus:
                                                "brief_id_used": report["brief_id"], "attempt": 1})
                 report["docket_id"] = out.get("id")
                 self._log(f"submitted docket {out.get('id')} with {len(ops)} operation(s)")
+                self._emit("docket_submitted", docket_id=out.get("id"), operations=len(ops),
+                           kinds=sorted({op["kind"] for op in ops}))
 
-            # 4. tidy
-            report["tidy"] = self._mem.tidy(age_out=True, near=True, sweep=True, purge=False)
+            # 4. tidy - a catch-up keeps everything that has not been looked at
+            report["tidy"] = self._mem.tidy(age_out=not catch_up, near=True, sweep=not catch_up, purge=False)
         except (MemoryError, Exception) as e:  # noqa: BLE001 - a sleep records its failure and ends
             report["error"] = f"{type(e).__name__}: {e}"
             self._log(f"sleep error: {report['error']}")
+            self._emit("sleep_failed", error=report["error"])
         report["finished_at"] = time.time()
         report["duration_seconds"] = round(report["finished_at"] - start, 2)
         self.state["last_sleep"] = report
+        self._remember_run("sleep", report, operations=report["operations"], purged=report["purged"],
+                           docket_id=report["docket_id"], quiet=report["quiet"], catch_up=report["catch_up"])
+        if not report["error"]:
+            self._emit("sleep_done", operations=report["operations"], purged=report["purged"],
+                       quiet=report["quiet"], catch_up=report["catch_up"])
         self._save_state()
         return report
+
+    def _remember_run(self, kind: str, report: dict[str, Any], **summary: Any) -> None:
+        """A bounded history for the viewer: what each run did or why it stopped."""
+        rows = list(self.state.get("history") or [])
+        rows.append({"kind": kind, "started_at": report.get("started_at"),
+                     "finished_at": report.get("finished_at"),
+                     "duration_seconds": round((report.get("finished_at") or 0) - (report.get("started_at") or 0), 2),
+                     "error": report.get("error"), **summary})
+        self.state["history"] = rows[-40:]
 
     def _held_short_ids(self) -> set[str]:
         """Short-terms already spoken for by a pending docket. Proposing them
@@ -410,6 +506,9 @@ class Hippocampus:
                     continue                                   # already resubmitted
                 if d.get("terminal"):
                     report["ended"].append(cluster_id)         # the chain is spent; shorts stay
+                    if cluster_id not in (self.state.get("ended_chains") or []):
+                        self.state["ended_chains"] = (self.state.get("ended_chains") or [])[-200:] + [cluster_id]
+                        self._emit("chain_ended", cluster_id=cluster_id, docket_id=d["id"])
                     continue
                 new_ops = self._redraft(denied)
                 if not new_ops:
@@ -425,11 +524,15 @@ class Hippocampus:
                 report["resubmitted"].append({"docket_id": out.get("id"), "cluster_id": cluster_id,
                                               "attempt": attempt, "operations": len(new_ops)})
                 self._log(f"resubmitted {len(new_ops)} operation(s) for {cluster_id} as attempt {attempt}")
+                self._emit("tend_resubmitted", docket_id=out.get("id"), cluster_id=cluster_id,
+                           attempt=attempt, operations=len(new_ops),
+                           terminal=attempt >= self._cfg.sleep.max_attempts)
         except (MemoryError, Exception) as e:  # noqa: BLE001
             report["error"] = f"{type(e).__name__}: {e}"
             self._log(f"tend error: {report['error']}")
         report["finished_at"] = time.time()
         self.state["last_tend"] = report
+        self._remember_run("tend", report, resubmitted=len(report["resubmitted"]), ended=len(report["ended"]))
         self._save_state()
         return report
 

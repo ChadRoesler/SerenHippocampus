@@ -14,6 +14,7 @@ POSTs on a schedule.
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -50,19 +51,40 @@ def create_app(config: Optional[HippocampusConfig] = None,
             allow_prerelease=cfg.updates.allow_prerelease,
         )
         tasks: list[asyncio.Task] = []
+        app.state.next_at: dict[str, Optional[float]] = {"sleep": None, "tend": None}
         if cfg.sleep.mode == "thread":
-            async def loop(name: str, interval: int, fn):
-                print(f"[seren-hippocampus] {name} loop active (every {interval}s)")
+            h: Hippocampus = app.state.hippocampus
+
+            async def sleep_loop():
+                print("[seren-hippocampus] sleep loop active ("
+                      + (f"daily at {cfg.sleep.at}" if cfg.sleep.at.strip() else f"every {cfg.sleep.interval_seconds}s")
+                      + "; overdue on boot sleeps after the warm-up)")
                 while True:
-                    await asyncio.sleep(interval)
+                    wait = h.seconds_until_sleep()
+                    app.state.next_at["sleep"] = time.time() + wait
+                    await asyncio.sleep(wait)
                     try:
-                        await asyncio.to_thread(fn)
+                        await asyncio.to_thread(h.sleep)
                     except Busy:
                         pass
                     except Exception as e:  # noqa: BLE001
-                        print(f"[seren-hippocampus] {name} error: {e}")
-            tasks.append(asyncio.create_task(loop("sleep", cfg.sleep.interval_seconds, app.state.hippocampus.sleep)))
-            tasks.append(asyncio.create_task(loop("tend", cfg.sleep.tend_interval_seconds, app.state.hippocampus.tend)))
+                        print(f"[seren-hippocampus] sleep error: {e}")
+
+            async def tend_loop():
+                interval = cfg.sleep.tend_interval_seconds
+                print(f"[seren-hippocampus] tend loop active (every {interval}s)")
+                while True:
+                    app.state.next_at["tend"] = time.time() + interval
+                    await asyncio.sleep(interval)
+                    try:
+                        await asyncio.to_thread(h.tend)
+                    except Busy:
+                        pass
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[seren-hippocampus] tend error: {e}")
+
+            tasks.append(asyncio.create_task(sleep_loop()))
+            tasks.append(asyncio.create_task(tend_loop()))
         try:
             yield
         finally:
@@ -96,10 +118,62 @@ def create_app(config: Optional[HippocampusConfig] = None,
     @app.get("/status")
     async def status(request: Request):
         h: Hippocampus = request.app.state.hippocampus
+        nxt = getattr(request.app.state, "next_at", {}) or {}
         return {"mode": cfg.sleep.mode, "interval_seconds": cfg.sleep.interval_seconds,
                 "tend_interval_seconds": cfg.sleep.tend_interval_seconds,
                 "model_configured": h.model_configured,
+                "next_sleep_at": nxt.get("sleep") if cfg.sleep.mode == "thread" else None,
+                "next_tend_at": nxt.get("tend") if cfg.sleep.mode == "thread" else None,
+                "sleep_at": cfg.sleep.at or None,
+                "catch_up_next": h.is_catch_up(),
+                "webhook": bool(cfg.notify.webhook_url),
                 "last_sleep": h.state.get("last_sleep"), "last_tend": h.state.get("last_tend")}
+
+    @app.get("/events")
+    async def events(request: Request):
+        """What happened, newest first: dockets submitted, sleeps failed,
+        chains ended, purges. The same events go to notify.webhook_url when
+        one is configured; each says whether that delivery worked."""
+        h: Hippocampus = request.app.state.hippocampus
+        rows = list(h.state.get("events") or [])
+        return {"count": len(rows), "webhook": bool(cfg.notify.webhook_url),
+                "entries": list(reversed(rows))}
+
+    @app.get("/history")
+    async def history(request: Request):
+        """The last sleeps and tends this service ran, newest first."""
+        h: Hippocampus = request.app.state.hippocampus
+        rows = list(h.state.get("history") or [])
+        return {"count": len(rows), "entries": list(reversed(rows))}
+
+    @app.get("/queue")
+    async def queue(request: Request):
+        """What is waiting for review, read from SerenMemory. The queue lives
+        there; this is a window onto it so the viewer can show it without a
+        second token. A Memory that does not answer is reported, not raised."""
+        mem: MemoryClient = request.app.state.memory
+        try:
+            rows = await asyncio.to_thread(mem.dockets, "pending", 50)
+        except MemoryError as e:
+            return {"count": 0, "dockets": [], "error": str(e)}
+        return {"count": len(rows), "dockets": rows}
+
+    @app.get("/viewer")
+    async def viewer():
+        """The window for whoever runs this and did not build it: did the sleep
+        run, what is waiting for review, and when it broke, what broke. Public
+        route; its API calls carry the token via the shell's 🔑 modal."""
+        from pathlib import Path
+        from fastapi.responses import HTMLResponse
+        from seren_meninges.viewer import render_from_dir
+        html = render_from_dir(
+            Path(__file__).resolve().parent / "viewer" / "ui",
+            title="SerenHippocampus",
+            brand="Seren<b>Hippocampus</b> · the sleep",
+            subtitle=f"v{__version__} · drafts the docket, resubmits on critique, purges what was flagged",
+            accent="#c9a0dc",
+        )
+        return HTMLResponse(html)
 
     @app.post("/sleep")
     async def sleep_now(request: Request):
