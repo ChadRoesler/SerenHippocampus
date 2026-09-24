@@ -50,6 +50,11 @@ Homepage = "https://github.com/ChadRoesler/SerenHippocampus"
 [tool.setuptools.packages.find]
 include = ["seren_hippocampus*"]
 
+# The viewer bricks ride inside the wheel; without this pip strips non-.py
+# files and GET /viewer renders an empty shell on an installed copy.
+[tool.setuptools.package-data]
+seren_hippocampus = ["viewer/ui/*.html", "viewer/ui/*.css", "viewer/ui/*.js"]
+
 [tool.setuptools_scm]
 # .git is one level above pyproject.toml (repo root)
 root = ".."

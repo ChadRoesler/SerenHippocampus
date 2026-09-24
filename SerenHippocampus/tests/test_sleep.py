@@ -260,3 +260,49 @@ def test_app_runs_a_sleep_and_refuses_a_second_at_once(memory, bridge, hcfg):
         finally:
             h._lock.release()
     client.close()
+
+
+def test_viewer_queue_and_history_serve_the_window(memory, bridge, hcfg):
+    """The page for whoever runs this and did not build it: /viewer renders on
+    the shared shell, /queue shows what is waiting in Memory, /history keeps
+    the last runs, and /status says when the next sleep is due."""
+    from fastapi.testclient import TestClient
+    from seren_hippocampus.app import create_app
+    from seren_hippocampus.memory_client import MemoryClient
+
+    client = MemoryClient("http://memory.test", transport=bridge)
+    app = create_app(hcfg, memory_client=client)
+    with TestClient(app) as tc:
+        page = tc.get("/viewer")
+        assert page.status_code == 200
+        assert "Hippocampus" in page.text and "Waiting for review" in page.text and "#c9a0dc" in page.text
+        assert tc.get("/queue").json() == {"count": 0, "dockets": []}
+        short(memory, "a", "t"); short(memory, "b", "t")
+        tc.post("/sleep"); tc.post("/tend")
+        q = tc.get("/queue").json()
+        assert q["count"] == 1 and q["dockets"][0]["operations"][0]["status"] == "pending"
+        h = tc.get("/history").json()
+        assert [e["kind"] for e in h["entries"]] == ["tend", "sleep"], "newest first"
+        assert h["entries"][1]["operations"] == 1 and h["entries"][1]["error"] is None
+        st = tc.get("/status").json()
+        assert "next_sleep_at" in st and st["next_sleep_at"] is None, "external mode: no timer"
+    client.close()
+
+
+def test_queue_reports_an_unreachable_memory_instead_of_failing(hcfg):
+    import httpx
+    from fastapi.testclient import TestClient
+    from seren_hippocampus.app import create_app
+    from seren_hippocampus.memory_client import MemoryClient
+
+    def down(request):
+        raise httpx.ConnectError("refused")
+    client = MemoryClient("http://memory.test", transport=httpx.MockTransport(down))
+    app = create_app(hcfg, memory_client=client)
+    with TestClient(app) as tc:
+        q = tc.get("/queue").json()
+        assert q["dockets"] == [] and "refused" in q["error"]
+        assert tc.get("/health").json()["memory_reachable"] is False
+        r = tc.post("/sleep").json()
+        assert r["error"] and "refused" in r["error"], "a sleep against a dead Memory records why it stopped"
+    client.close()
