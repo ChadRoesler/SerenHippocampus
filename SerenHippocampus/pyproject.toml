@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seren-hippocampus"
+dynamic = ["version"]
+description = "The sleep cycle for SerenMemory: drafts the docket, resubmits on critique, purges what was flagged. The consolidator, split out."
+license = "GPL-3.0-only"
+requires-python = ">=3.10"
+authors = [{ name = "Chad Roesler" }]
+readme = "README.md"
+keywords = ["seren", "memory", "consolidation", "llm", "fastapi"]
+
+# Deliberately no chromadb and no store: the hippocampus holds nothing. It
+# talks to SerenMemory over HTTP and to a small model over /v1/chat/completions.
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+    "httpx>=0.26",
+    "seren-meninges>=2.4.0,<3",
+    "seren-sinew>=1.0.0,<2",
+]
+
+[project.optional-dependencies]
+mcp = [
+    # THE <2 CAP IS LOAD-BEARING: mcp 2.0.0 removed FastMCP (see SerenMemory).
+    "mcp>=1.0,<2",
+]
+corp = [
+    "truststore>=0.9",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.26",
+    # The tests run the REAL SerenMemory app in-process behind an ASGI
+    # transport, so the contract between the two is exercised, not mocked.
+    "seren-memory>=3.1.0.dev0",
+]
+
+[project.scripts]
+seren-hippocampus = "seren_hippocampus.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/ChadRoesler/SerenHippocampus"
+
+[tool.setuptools.packages.find]
+include = ["seren_hippocampus*"]
+
+[tool.setuptools_scm]
+# .git is one level above pyproject.toml (repo root)
+root = ".."
+version_scheme = "release-branch-semver"
+version_file = "seren_hippocampus/_version.py"
+tag_regex = "^v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+.*)$"
+fallback_version = "0.0.0.dev0"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

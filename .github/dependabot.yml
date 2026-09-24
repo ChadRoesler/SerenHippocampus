@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # GitHub Actions used in .github/workflows/*. Dependabot rewrites the pinned
+  # SHA (keeping the `# vX.Y.Z` comment in sync) when the action releases.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+
+  # Python deps for the hippocampus package (pyproject lives in SerenHippocampus/).
+  - package-ecosystem: "pip"
+    directory: "/SerenHippocampus"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+
+  # Node deps for the VS Code extension.
+  - package-ecosystem: "npm"
+    directory: "/SerenHippocampusVSCode"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps(vscode)"

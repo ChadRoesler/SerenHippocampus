@@ -1,0 +1,155 @@
+name: Build & Release
+
+on:
+  push:
+    branches: ["**"]
+    tags:
+      - "v*"
+  pull_request:
+
+permissions:
+  contents: write
+
+# The hippocampus has no vector index and no editor extension: the matrix is
+# the package's own extras (mcp, corp), and the tests run the real SerenMemory
+# in-process (the [dev] extra pulls it), so this is a contract test between
+# the two services on every push.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: "Test py${{ matrix.python-version }} [${{ matrix.extras }}]"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+        extras: ["dev", "dev,mcp", "dev,corp", "dev,corp,mcp"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # setuptools-scm needs full history + tags
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and deps (extras = ${{ matrix.extras }})
+        run: pip install -e ".[${{ matrix.extras }}]"
+        working-directory: SerenHippocampus
+        env:
+          # Tests don't care about the real version; pin one so scm never has
+          # to compute from history (and so a tagless branch can't trip it).
+          SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0"
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
+        working-directory: SerenHippocampus
+
+  install-shapes:
+    runs-on: ubuntu-latest
+    name: "Install ${{ matrix.shape.label }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        shape:
+          - { label: "bare",   spec: "." }
+          - { label: "[mcp]",  spec: ".[mcp]" }
+          - { label: "[corp]", spec: ".[corp]" }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ${{ matrix.shape.spec }}
+        run: pip install "${{ matrix.shape.spec }}"
+        working-directory: SerenHippocampus
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0"
+
+      - name: Install a test client (NOT part of the shape under test)
+        # starlette's TestClient needs httpx at runtime. httpx is a real
+        # dependency of this package, so this only guards the client class.
+        run: pip install "httpx2" || pip install "httpx"
+
+      - name: Import and construct the app OUT OF TREE
+        run: |
+          cd "$(mktemp -d)"
+          python - <<'PY'
+          from seren_hippocampus.app import create_app
+          from seren_hippocampus.config import HippocampusConfig, SleepConfig
+          from fastapi.testclient import TestClient
+          # external mode: no loops start; Memory is not running here, and the
+          # service must still come up and answer / and /health honestly.
+          app = create_app(HippocampusConfig(sleep=SleepConfig(mode="external")))
+          with TestClient(app) as c:
+              r = c.get("/")
+              assert r.status_code == 200, f"/ returned {r.status_code}: {r.text[:300]}"
+              u = r.json().get("updates")
+              assert isinstance(u, dict), f"/ must always carry an updates dict, got {u!r}"
+              assert u["status"] in {"ok", "disabled", "unavailable", "error"}, u
+              assert u["status"] != "unavailable", (
+                  "update checking is core in seren-meninges; unavailable means it "
+                  f"resolved too old or the checker was never constructed. detail={u['detail']}")
+              h = c.get("/health").json()
+              assert h["ok"] is True and h["memory_reachable"] is False
+          print("app constructed OK; updates status", u["status"])
+          PY
+
+  build-and-release:
+    needs: [test, install-shapes]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # setuptools-scm derives the version from the tag graph
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build
+        run: pip install build
+
+      - name: Build wheel and sdist
+        run: python -m build
+        working-directory: SerenHippocampus
+
+      - name: Upload dist as artifact (handed to the publish job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: seren-hippocampus-dist
+          path: SerenHippocampus/dist/
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SerenHippocampus/dist/*
+
+  pypi-publish:
+    needs: [build-and-release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/seren-hippocampus
+    permissions:
+      id-token: write   # MANDATORY for Trusted Publishing; job-level = least privilege
+    steps:
+      - name: Download the built dist
+        uses: actions/download-artifact@v4
+        with:
+          name: seren-hippocampus-dist
+          path: dist/
+
+      - name: Publish to PyPI (tokenless)
+        uses: pypa/gh-action-pypi-publish@release/v1

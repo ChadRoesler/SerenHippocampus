@@ -1,0 +1,44 @@
+# SerenHippocampus config - copy to ~/seren-hippocampus/seren-hippocampus.yaml
+#
+# The hippocampus is SerenMemory's sleep cycle, split out. It holds no store:
+# it reads short-terms from Memory, writes dockets to Memory, and purges what
+# was flagged. Two loops: sleep (~20h) and tend (every few minutes, picks up
+# denied operations and resubmits them).
+
+server:
+  host: 127.0.0.1        # local-only. 0.0.0.0 = reachable on the LAN - set a bearer first
+  port: 7424             # the last slot in the brain band
+  # The bearer THIS service requires of callers (its /sleep, /tend, /status).
+  # bearer_token: ""                                # inline literal - escape hatch
+  # bearer_token_env: SEREN_HIPPOCAMPUS_TOKEN       # NAME of an env var (recommended)
+  # bearer_token_keyring: "seren-hippocampus/bearer"
+
+memory:
+  url: http://127.0.0.1:7420
+  # The bearer the hippocampus presents TO Memory. A Memory installed with
+  # --gen-token answers 401 to everything without one. Same three pointers.
+  # bearer_token_env: SEREN_MEMORY_TOKEN
+  # bearer_token_keyring: "seren-memory/bearer"
+  # bearer_token: ""
+  timeout_seconds: 30
+
+model:
+  # The small model - the Inside Out workers. OpenAI-compatible
+  # /v1/chat/completions; a 2B-4B model is plenty. Empty url = mechanical
+  # mode: clusters over the threshold become new cores by the longest entry,
+  # verbatim flags are honoured, and no attach / supersede is proposed,
+  # because those are judgement calls.
+  url: http://localhost:8090/v1
+  name: default
+  timeout_seconds: 120
+  max_tokens: 900
+
+sleep:
+  mode: thread             # thread = loops in-process; external = POST /sleep and /tend yourself
+  interval_seconds: 72000  # ~20h, not 24, on purpose: the window drifts through the day
+  tend_interval_seconds: 300
+  max_entries_per_run: 500
+  promote_min_evidence: 3  # short-terms a topic needs before it is proposed (hints, pins, verbatim override)
+  max_attempts: 3          # dockets per chain before the last one is submitted terminal
+  candidate_cores: 5       # existing cores shown to the model per cluster
+  state_path: ~/.seren-hippocampus/state.json
