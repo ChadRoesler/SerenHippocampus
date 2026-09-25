@@ -38,7 +38,9 @@ dev = [
     "httpx>=0.26",
     # The tests run the REAL SerenMemory app in-process behind an ASGI
     # transport, so the contract between the two is exercised, not mocked.
-    "seren-memory>=3.1.0.dev0",
+    # 4.0.0 is the first Memory with /drafts (the docket rename) and without
+    # the in-process consolidator: release Memory first, then this.
+    "seren-memory>=4.0.0",
 ]
 
 [project.scripts]
