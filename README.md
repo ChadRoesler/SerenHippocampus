@@ -39,41 +39,95 @@ the next sleep with a tombstone (id, reason, time, what the cascade removed -
 never the content), or immediately through Memory's `purge_memory_now` for
 the emergency.
 
-## The two loops
+## The loop
 
-- **sleep** (~20 h, deliberately not 24, or daily at `sleep.at`): purge
-  flagged, take the brief (or pull one from recent short-terms with the
-  small model), group short-terms by topic, show the model each cluster with
-  the nearest existing cores, and submit one docket for the sleep.
-  Short-terms a pending docket already holds are left alone. Then the
-  mechanical tidy: age out, maintain near-term, sweep pruned.
-- **tend** (every few minutes): reviewed dockets with denied operations and
-  no later attempt in their chain get redrafted and resubmitted.
+Every few minutes (`tend_interval_seconds`) one tick runs, two steps:
 
-`sleep.mode: thread` runs both here; `external` means something else
-POSTs `/sleep` and `/tend` on a schedule.
+- **tend**: reviewed dockets with denied operations and no later attempt
+  in their chain get redrafted from the critique and resubmitted; a chain
+  whose every operation has a verdict (or whose last attempt was denied) is
+  **culled** - the dockets closed, the brief that opened it consumed, the
+  review note completed, a `chain_closed` event.
+- **check**: purge what was flagged; then ask Memory for an open brief.
+  One there and no chain open means **sleep now**. None means wait.
+
+**The brief is the gate.** The hippocampus never drafts on its own clock. A
+sleep: group the free short-terms by topic, show the small model each
+cluster with the nearest existing cores and the brief as the steer, submit
+one docket, leave a review note in Memory naming it, then the mechanical
+tidy (age out, maintain near-term, sweep pruned). Short-terms a pending
+docket already holds are left alone. One chain at a time: a brief that
+arrives while a docket is under review waits its turn.
+
+`sleep.mode: thread` runs the tick here; `external` means something else
+POSTs `/tend` and `/check` (or `/sleep` by hand).
 
 ### When the sleep fires
 
-The next sleep is due one interval after the last one finished, or at the
-next `sleep.at` wall-clock time (local `HH:MM`) after it. A process that
-boots **overdue** - a fresh install, or a month with the computer off -
-sleeps after `warmup_seconds`, not a whole interval later.
+Whenever a brief arrives. Writing one at noon and saying "I'm off to the
+forest" puts the hippocampus to bed at noon.
+
+**Bedtime** is `interval_seconds` after the last sleep, or the next
+`sleep.at` wall-clock time (local `HH:MM`). Past bedtime with no brief, the
+checks are counted as misses, and every `brief_check_misses` of them the
+hippocampus asks: "I see you're looking tired, let's get ready for bed." It
+has no line to a model session, so it leaves an intent in Memory's
+near-term tier - the one place the main model is guaranteed to look at the
+start of a session - and emits a `brief_requested` event for whatever
+listens on the webhook. Asked and still waiting, it nudges the webhook
+again but leaves no second note. `/status` carries `bedtime_at`,
+`brief_wanted` and the last check.
+
+### The brief
+
+The main model writes it (`submit_brief` on Memory: a summary of what
+mattered, `promote_hints`, `noise_hints`, `completed_intents`). It is how
+the hippocampus is not making every decision alone, and it is what turns a
+one-off joke into an inside joke. A matched promote hint drops a topic's
+promotion threshold to one and a matched noise hint raises it out of reach,
+so a running bit becomes a core from few fragments and a one-off never does.
+The summary itself, plus the hints that matched this cluster, go into the
+drafting worker's prompt as the *steer*, marked as written by the main model
+or pulled from the fragments. A brief steers the one sleep it opened and is
+consumed when that chain lands (or at once, if there was nothing to draft).
+A one-off mention of a fish dream stays short-term. A consistent bit about
+Fred Durst as the warrior poet of our time becomes a core, because the brief
+named it.
+
+`brief_pull: true` is for a headless install with no main model: after
+`brief_check_misses` misses the small model pulls a brief from the fragments
+and sleeps on it. Off by default, by design.
 
 ### The month away
 
-A sleep that comes after a gap longer than `gap_grace_intervals` intervals
-(or the first sleep ever on a store) is a **catch-up**. It drafts and purges
-like any other sleep, but it does not age out and does not sweep: nothing
-that never had its chance is gone before someone has looked. The report and
-the viewer say so. A sleep inside the grace window is a normal one.
+A month with no brief is a month with no sleeps: nothing drafted, nothing
+aged out. Flagged memories are still purged on every tick, because a flag
+is a decision already made. The first sleep back (a gap longer than
+`gap_grace_intervals` bedtimes, or the first sleep ever on a store) is a
+**catch-up**: it drafts and purges but does not age out and does not sweep,
+so nothing that never had its chance is gone before someone has looked.
 
 ### Quiet
 
-A sleep with nothing free to draft from - no short-terms, or only ones a
-pending docket already holds - pulls no brief and calls no model. It purges
-what was flagged, tidies, and records itself as `quiet`. Leaving the
-computer on for a week you were not there costs nothing but the tidy.
+A sleep whose brief finds nothing free to draft from calls no model,
+consumes the brief, tidies, and records itself as `quiet`.
+
+### The model, on only when needed
+
+The drafting model runs a few minutes a night and after a review; it should
+not hold VRAM the rest of the day, on a Nano floor or on a 4 GB card. With
+`model.lifecycle.manage: true` the hippocampus starts the server when a sleep
+or a redraft needs it (a `start` command line, or the node's Observatory for a
+registered service), waits for its health check, keeps it warm for
+`keep_warm_seconds` after the last call, and stops it on the next tick after
+that. It never stops a server it did not start: one that already answered was
+started by someone else.
+
+A configured model that cannot be reached is a failed sleep that keeps its
+brief for the next check - never a mechanical copy of the fragments. After a
+failed start the next attempt waits `retry_after_seconds`. `/status` carries
+`model_lifecycle`; events `model_started`, `model_stopped`,
+`model_start_failed`.
 
 ## Mechanical mode
 
@@ -107,8 +161,9 @@ Seren service.
 | `GET /`        | service, version, mode, whether a model is configured |
 | `GET /health`  | liveness, and whether Memory answers                  |
 | `GET /status`  | last sleep and last tend, intervals                   |
-| `POST /sleep`  | run a sleep now (409 if one is running)               |
-| `POST /tend`   | pick up denied operations now                         |
+| `POST /sleep`  | sleep now by hand, on the open brief if any (409 if busy) |
+| `POST /tend`   | pick up denied operations now; cull chains that landed |
+| `POST /check`  | check for a brief now; sleep on it if there is one    |
 | `GET /queue`   | what is waiting for review, read from Memory          |
 | `GET /history` | the last runs, newest first                           |
 | `GET /events`  | what happened, newest first, and whether it was sent  |

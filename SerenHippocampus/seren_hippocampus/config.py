@@ -56,6 +56,38 @@ class MemoryTarget(BaseModel):
                              env_var=self.bearer_token_env or None)
 
 
+class ModelLifecycleConfig(BaseModel):
+    """Start the small model when it is needed, stop it when it is not.
+    See seren_hippocampus.model_lifecycle for the why (a Nano floor, a 4 GB
+    card). Off by default: a server that is simply left running still works."""
+    manage: bool = False
+    # A command line that starts the server (llama-server, ollama serve ...).
+    start: str = ""
+    # Optional command that stops it. Blank = stop the process we started.
+    stop: str = ""
+    cwd: str = ""
+    # Or ask this node's Observatory to start / stop a registered service.
+    observatory_url: str = ""
+    observatory_service: str = ""
+    observatory_token: str = Field(default="", repr=False)
+    observatory_token_env: str = ""
+    observatory_token_keyring: str = ""
+    # Blank = the model url without /v1, plus /health (llama.cpp answers there).
+    health_url: str = ""
+    ready_timeout_seconds: int = 240
+    poll_seconds: float = 2.0
+    # How long the model stays up after its last call, so a review and a
+    # redraft reuse it. Stopped on the first tick after that.
+    keep_warm_seconds: int = 300
+    # After a failed start, wait this long before trying again.
+    retry_after_seconds: int = 900
+
+    def resolve_observatory_token(self) -> str:
+        return resolve_token(inline=self.observatory_token or None,
+                             keyring_ref=self.observatory_token_keyring or None,
+                             env_var=self.observatory_token_env or None)
+
+
 class ModelConfig(BaseModel):
     """The small model. Empty url = mechanical mode: dockets are built from
     thresholds and verbatim flags alone, with no attach / supersede, because
@@ -64,6 +96,7 @@ class ModelConfig(BaseModel):
     name: str = "default"
     timeout_seconds: int = 120
     max_tokens: int = 900
+    lifecycle: ModelLifecycleConfig = Field(default_factory=ModelLifecycleConfig)
 
 
 class SleepConfig(BaseModel):
@@ -94,6 +127,20 @@ class SleepConfig(BaseModel):
     # CATCH-UP: it drafts and purges but does not age out or sweep, so nothing
     # that never had its chance is trashed before someone has looked.
     gap_grace_intervals: float = 3.0
+    # THE BRIEF IS THE GATE. Every tick (tend_interval_seconds) the
+    # hippocampus checks Memory for an open brief. One there means sleep now:
+    # the draft cycle runs on it. None means wait. Once bedtime has passed
+    # (interval_seconds / at, above) the misses are counted, and every
+    # brief_check_misses of them the hippocampus asks: it leaves an intent in
+    # Memory's near-term tier where the main model will see it, and emits a
+    # brief_requested event for whatever listens on the webhook.
+    brief_request: bool = True
+    brief_check_misses: int = 3
+    # brief_pull: with no main model to write briefs, let the small model pull
+    # one from the fragments after brief_check_misses misses and sleep on it.
+    # Off by design: the brief is the main model's, and it is what turns a
+    # one-off into an inside joke. A headless install may turn it on.
+    brief_pull: bool = False
     # Where the hippocampus keeps its own last-run record (it has no store).
     state_path: str = "~/.seren-hippocampus/state.json"
 

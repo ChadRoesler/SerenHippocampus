@@ -48,6 +48,7 @@ import httpx
 
 from .config import HippocampusConfig
 from .memory_client import MemoryClient, MemoryError
+from .model_lifecycle import ModelLifecycle, ModelUnavailable
 
 OP_KINDS = ("new_core", "attach", "supersede", "verbatim")
 
@@ -65,6 +66,8 @@ class Hippocampus:
         self._lock = threading.Lock()
         self._notify_transport = notify_transport
         self.state: dict[str, Any] = self._load_state()
+        self.model = ModelLifecycle(cfg.model, log=self._log, emit=self._emit,
+                                    log_dir=self._state_path().parent)
 
     # ── when is the next sleep due ────────────────────────────────────────
     def next_sleep_due(self, now: Optional[float] = None) -> float:
@@ -158,13 +161,21 @@ class Hippocampus:
         m = self._cfg.model
         if not self.model_configured:
             raise RuntimeError("no model configured")
+        # Up when needed (started if lifecycle.manage is on), ModelUnavailable
+        # otherwise - which the sleep turns into a failure that keeps the brief.
+        self.model.ensure_up()
         url = m.url.rstrip("/") + "/chat/completions"
         payload = {"model": m.name, "messages": [{"role": "user", "content": prompt}],
                    "max_tokens": max_tokens or m.max_tokens, "temperature": 0.2}
-        with httpx.Client(timeout=m.timeout_seconds) as c:
-            r = c.post(url, json=payload)
-            r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"] or ""
+        try:
+            with httpx.Client(timeout=m.timeout_seconds) as c:
+                r = c.post(url, json=payload)
+                r.raise_for_status()
+                return r.json()["choices"][0]["message"]["content"] or ""
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise ModelUnavailable(f"the model at {m.url} stopped answering: {e}") from e
+        finally:
+            self.model.release()
 
     @staticmethod
     def _json_from(text: str) -> Optional[Any]:
@@ -192,10 +203,18 @@ class Hippocampus:
 
     # ── public entry points ───────────────────────────────────────────────
     def sleep(self) -> dict[str, Any]:
+        """Sleep NOW, by hand (POST /sleep, the viewer's button): on the open
+        brief if there is one, without one otherwise. The loop itself never
+        sleeps without a brief - see check()."""
         if not self._lock.acquire(blocking=False):
             raise Busy("a sleep or tend is already running")
         try:
-            return self._sleep()
+            brief = None
+            try:
+                brief = self._mem.latest_brief()
+            except MemoryError:
+                pass
+            return self._sleep(brief=brief)
         finally:
             self._lock.release()
 
@@ -207,14 +226,160 @@ class Hippocampus:
         finally:
             self._lock.release()
 
+    def check(self, now: Optional[float] = None) -> dict[str, Any]:
+        """Check for a brief; sleep on it if one is there and no chain is
+        open; count the misses after bedtime and ask when they add up."""
+        if not self._lock.acquire(blocking=False):
+            raise Busy("a sleep or tend is already running")
+        try:
+            return self._check(now)
+        finally:
+            self._lock.release()
+
+    def tick(self) -> dict[str, Any]:
+        """One turn of the loop: tend the open chains, check for a brief, and
+        stop a model this hippocampus started once it has gone idle."""
+        out = {"tend": self.tend(), "check": self.check()}
+        try:
+            out["model_stopped"] = self.model.maybe_stop()
+        except Exception as e:  # noqa: BLE001
+            self._log(f"model stop check failed: {e}")
+        return out
+
+    # ── the check: is there a brief? ──────────────────────────────────────
+    def _open_chain(self) -> bool:
+        """A docket is still in play: pending verdicts, or denied operations
+        that tend will redraft. One chain at a time - a brief that arrives
+        while one is open waits its turn."""
+        if self._mem.dockets(status="pending"):
+            return True
+        for d in self._mem.dockets(status="reviewed"):
+            denied = [op for op in (d.get("operations") or []) if op.get("status") == "denied"]
+            if not denied or d.get("terminal"):
+                continue                                   # tend will close it
+            chain = self._mem.docket_chain(d["id"])
+            if any(int(x.get("attempt", 1)) > int(d.get("attempt", 1)) for x in chain):
+                continue
+            return True
+        return False
+
+    def _check(self, now: Optional[float] = None) -> dict[str, Any]:
+        now = time.time() if now is None else now
+        misses = int(self.state.get("brief_misses") or 0)
+        report: dict[str, Any] = {"at": now, "status": None, "brief_id": None, "misses": misses, "sleep": None}
+        try:
+            # Flagged memories are purged on the tick, not at the sleep: a flag is
+            # a decision already made, and a month with no brief must not keep a
+            # leaked key alive.
+            purged = self._mem.tidy(age_out=False, near=False, sweep=False, purge=True).get("purged") or []
+            if purged:
+                self._log(f"purged {len(purged)} flagged memories")
+                self._emit("purged", count=len(purged), ids=[t.get("id") for t in purged])
+
+            brief = self._mem.latest_brief()
+            if brief:
+                report["brief_id"] = brief.get("id")
+                if self._open_chain():
+                    report["status"] = "chain_open"        # the brief waits for the chain to land
+                else:
+                    report["status"] = "sleeping"
+                    self.state["brief_misses"] = 0
+                    report["misses"] = 0
+                    report["sleep"] = self._sleep(brief=brief)
+            else:
+                due = self.next_sleep_due(now)
+                if now < due:
+                    report["status"] = "not_bedtime"
+                    self.state["brief_misses"] = 0
+                    report["misses"] = 0
+                else:
+                    misses += 1
+                    self.state["brief_misses"] = misses
+                    report["misses"] = misses
+                    report["status"] = "waiting_for_brief"
+                    every = self._cfg.sleep.brief_check_misses
+                    if self._cfg.sleep.brief_request and every > 0 and misses % every == 0:
+                        self.request_brief(now)
+                    if self._cfg.sleep.brief_pull and every > 0 and misses >= every and not self._open_chain():
+                        pulled = self._pull_brief()
+                        if pulled:
+                            report["status"] = "sleeping_on_pulled_brief"
+                            self.state["brief_misses"] = 0
+                            report["sleep"] = self._sleep(brief=pulled)
+        except (MemoryError, Exception) as e:  # noqa: BLE001 - a check records its failure and ends
+            report["status"] = "error"
+            report["error"] = f"{type(e).__name__}: {e}"
+            self._log(f"check error: {report['error']}")
+        self.state["last_check"] = {k: v for k, v in report.items() if k != "sleep"}
+        self._save_state()
+        return report
+
+    # ── the bedtime call ──────────────────────────────────────────────────
+    def brief_wanted(self) -> Optional[dict[str, Any]]:
+        """The open request, if the hippocampus has asked for a brief for the
+        coming sleep and none has been answered yet."""
+        req = self.state.get("brief_request")
+        return req if isinstance(req, dict) and req.get("answered") is None else None
+
+    def request_brief(self, now: Optional[float] = None) -> Optional[dict[str, Any]]:
+        """'I see you're looking tired, let's get ready for bed.' Within
+        brief_lead_seconds of the next sleep, once per sleep, and only when no
+        brief has arrived since the last one: leave an intent in Memory's
+        near-term tier where the main model will see it, and say so on the
+        events feed. The note names the time, what a brief is for, and how to
+        write one. Returns the open request, or None when nothing was needed."""
+        cfg = self._cfg.sleep
+        if not cfg.brief_request:
+            return None
+        now = time.time() if now is None else now
+        due = self.next_sleep_due(now)
+        req = self.state.get("brief_request")
+        if isinstance(req, dict) and req.get("answered") is None:
+            # Already asked and still waiting: nudge the webhook again, but do
+            # not leave a second note - one open loop in Memory is enough.
+            req["nudges"] = int(req.get("nudges") or 0) + 1
+            self._emit("brief_requested", due_at=req.get("for_sleep_due_at"), intent_id=req.get("intent_id"),
+                       nudge=req["nudges"])
+            self._save_state()
+            return req
+        if self._mem.latest_brief():
+            return None                                   # the model got there first
+        when = time.strftime("%H:%M", time.localtime(due)) if due > now else "soon"
+        text = (f"The hippocampus wants a brief before it sleeps at {when}: what mattered since the last "
+                "sleep, promote_hints for the running bits and the real lessons, noise_hints for the one-offs. "
+                "submit_brief on Memory writes it; without one the small model pulls a guess from the fragments.")
+        out = self._mem.add_near(text, topic="hippocampus, brief", trigger_type="always",
+                                 expires_at=due + 6 * 3600)
+        req = {"asked_at": now, "for_sleep_due_at": due, "intent_id": out.get("id"), "answered": None}
+        self.state["brief_request"] = req
+        self._emit("brief_requested", due_at=due, intent_id=out.get("id"))
+        self._save_state()
+        self._log(f"asked for a brief before the sleep at {when}")
+        return req
+
+    def _resolve_brief_request(self, answered: bool) -> None:
+        """The sleep is here: close the open request either way, so the note
+        does not linger in Memory and the next cycle can ask again."""
+        req = self.state.get("brief_request")
+        if not isinstance(req, dict) or req.get("answered") is not None:
+            return
+        req["answered"] = answered
+        req["resolved_at"] = time.time()
+        if req.get("intent_id"):
+            try:
+                self._mem.complete_near(str(req["intent_id"]))
+            except Exception as e:  # noqa: BLE001
+                self._log(f"could not complete the brief intent: {e}")
+
     # ── sleep ─────────────────────────────────────────────────────────────
-    def _sleep(self) -> dict[str, Any]:
+    def _sleep(self, brief: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         start = time.time()
         catch_up = self.is_catch_up(start)
         report: dict[str, Any] = {"started_at": start, "purged": 0, "brief_id": None,
                                   "brief_pulled": False, "clusters": 0, "operations": 0,
                                   "docket_id": None, "held_back": 0, "tidy": {}, "error": None,
-                                  "catch_up": catch_up, "quiet": False}
+                                  "catch_up": catch_up, "quiet": False,
+                                  "brief_requested": self.brief_wanted() is not None, "brief_answered": None}
         try:
             # 1. what was flagged
             purged = self._mem.tidy(age_out=False, near=False, sweep=False, purge=True).get("purged") or []
@@ -234,8 +399,11 @@ class Hippocampus:
                         if x["id"] not in self._held_short_ids()]
             report["quiet"] = not free_now
 
-            # 2. the brief (not pulled when there is nothing to steer)
-            brief = None if report["quiet"] else self._fresh_brief()
+            # 2. the brief: the gate that opened this sleep (or none, by hand)
+            if report["brief_requested"]:
+                answered = bool(brief and not brief.get("_pulled"))
+                report["brief_answered"] = answered
+                self._resolve_brief_request(answered)
             promote_hints: set[str] = set()
             noise_hints: set[str] = set()
             if brief:
@@ -257,7 +425,7 @@ class Hippocampus:
 
             ops: list[dict[str, Any]] = []
             for topic, entries in clusters.items():
-                ops += self._propose(topic, entries, promote_hints, noise_hints)
+                ops += self._propose(topic, entries, promote_hints, noise_hints, brief)
             report["operations"] = len(ops)
             if ops:
                 summary = self._summarise(ops)
@@ -265,8 +433,30 @@ class Hippocampus:
                                                "brief_id_used": report["brief_id"], "attempt": 1})
                 report["docket_id"] = out.get("id")
                 self._log(f"submitted docket {out.get('id')} with {len(ops)} operation(s)")
+                # Poke the model: a note in Memory that names the docket, closed
+                # when the chain lands. The event goes out for the webhook.
+                note_id = None
+                try:
+                    note = self._mem.add_near(
+                        f"A docket with {len(ops)} operation(s) waits for your review: review_docket "
+                        f"{out.get('id')}. Approve or deny each operation; a denial needs a critique.",
+                        topic="hippocampus, review", trigger_type="always")
+                    note_id = note.get("id")
+                    notes = dict(self.state.get("review_notes") or {})
+                    notes[str(out.get("cluster_id") or out.get("id"))] = note_id
+                    self.state["review_notes"] = notes
+                except Exception as e:  # noqa: BLE001 - the note is a courtesy, the docket is the record
+                    self._log(f"could not leave the review note: {e}")
                 self._emit("docket_submitted", docket_id=out.get("id"), operations=len(ops),
-                           kinds=sorted({op["kind"] for op in ops}))
+                           kinds=sorted({op["kind"] for op in ops}), review_note_id=note_id)
+            elif brief and not brief.get("_pulled") and brief.get("id"):
+                # A brief with nothing to draft from: nothing to review, so the
+                # brief has done its job. Consume it or the check loops forever.
+                try:
+                    self._mem.consume_brief(str(brief["id"]))
+                    self._emit("brief_consumed", brief_id=brief["id"], docket_id=None)
+                except Exception as e:  # noqa: BLE001
+                    self._log(f"could not consume the brief: {e}")
 
             # 4. tidy - a catch-up keeps everything that has not been looked at
             report["tidy"] = self._mem.tidy(age_out=not catch_up, near=True, sweep=not catch_up, purge=False)
@@ -281,9 +471,45 @@ class Hippocampus:
                            docket_id=report["docket_id"], quiet=report["quiet"], catch_up=report["catch_up"])
         if not report["error"]:
             self._emit("sleep_done", operations=report["operations"], purged=report["purged"],
-                       quiet=report["quiet"], catch_up=report["catch_up"])
+                       quiet=report["quiet"], catch_up=report["catch_up"],
+                       brief_answered=report["brief_answered"])
         self._save_state()
         return report
+
+    def _close_chain(self, d: dict[str, Any], chain: list[dict[str, Any]]) -> None:
+        """The cull. After the approved operations have been written to long
+        by the review, close every reviewed docket in the chain, consume the
+        brief that opened it, complete the review note, and say so."""
+        cluster_id = d.get("cluster_id") or d["id"]
+        for x in chain or [d]:
+            if x.get("status") == "reviewed":
+                try:
+                    self._mem.close_docket(x["id"])
+                except Exception as e:  # noqa: BLE001
+                    self._log(f"could not close docket {x['id']}: {e}")
+        brief_id = None
+        for x in (chain or [d]):
+            if x.get("brief_id_used"):
+                brief_id = x["brief_id_used"]
+                break
+        if brief_id:
+            try:
+                self._mem.consume_brief(str(brief_id), docket_id=d["id"])
+                self._emit("brief_consumed", brief_id=brief_id, docket_id=d["id"])
+            except Exception as e:  # noqa: BLE001
+                self._log(f"could not consume brief {brief_id}: {e}")
+        notes = dict(self.state.get("review_notes") or {})
+        note_id = notes.pop(str(cluster_id), None)
+        if note_id:
+            try:
+                self._mem.complete_near(str(note_id))
+            except Exception as e:  # noqa: BLE001
+                self._log(f"could not complete the review note: {e}")
+        self.state["review_notes"] = notes
+        self.state["brief_misses"] = 0
+        self._emit("chain_closed", cluster_id=cluster_id, docket_id=d["id"], brief_id=brief_id,
+                   attempts=len(chain or [d]))
+        self._log(f"chain {cluster_id} closed after {len(chain or [d])} attempt(s)")
 
     def _remember_run(self, kind: str, report: dict[str, Any], **summary: Any) -> None:
         """A bounded history for the viewer: what each run did or why it stopped."""
@@ -303,13 +529,6 @@ class Hippocampus:
                 if op.get("status", "pending") == "pending":
                     held.update(str(x) for x in (op.get("source_short_ids") or []))
         return held
-
-    def _fresh_brief(self) -> Optional[dict[str, Any]]:
-        latest = self._mem.latest_brief()
-        last = (self.state.get("last_sleep") or {}).get("finished_at") or 0
-        if latest and float((latest.get("metadata") or {}).get("created_at", 0) or 0) > float(last):
-            return latest
-        return self._pull_brief()
 
     def _pull_brief(self) -> Optional[dict[str, Any]]:
         if not self.model_configured:
@@ -351,7 +570,8 @@ class Hippocampus:
 
     # ── proposing operations for one cluster ──────────────────────────────
     def _propose(self, topic: str, entries: list[dict[str, Any]],
-                 promote_hints: set[str], noise_hints: set[str]) -> list[dict[str, Any]]:
+                 promote_hints: set[str], noise_hints: set[str],
+                 brief: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
         ops: list[dict[str, Any]] = []
         real_topic = None if topic == "_untagged" else topic
 
@@ -368,9 +588,11 @@ class Hippocampus:
         pinned = [e for e in remaining if (e.get("metadata") or {}).get("pinned")]
         threshold = self._cfg.sleep.promote_min_evidence
         haystack = (topic.lower() + " || " + " ".join((e.get("content") or "").lower() for e in entries))
-        if any(h and h in haystack for h in promote_hints):
+        kept = sorted(h for h in promote_hints if h and h in haystack)
+        noise = sorted(h for h in noise_hints if h and h in haystack)
+        if kept:
             threshold = 1
-        if any(h and h in haystack for h in noise_hints):
+        if noise:
             threshold = 10 ** 6
         if not pinned and len(remaining) < threshold:
             return ops
@@ -384,7 +606,8 @@ class Hippocampus:
             return ops
 
         candidates = self._candidates(remaining)
-        drafted = self._draft_cluster(real_topic, remaining, candidates)
+        drafted = self._draft_cluster(real_topic, remaining, candidates,
+                                      steer=self._steer(brief, kept, noise))
         if drafted:
             ops += drafted
         else:
@@ -410,10 +633,35 @@ class Hippocampus:
             out.append({"id": h["id"], "content": h.get("content") or "", "topic": meta.get("topic")})
         return out
 
+    @staticmethod
+    def _steer(brief: Optional[dict[str, Any]], kept: list[str], noise: list[str]) -> str:
+        """What the main model said mattered, put in front of the drafting
+        worker. The hints already move the promotion threshold; this is the
+        other half of the brief's job - the summary and the matched hints go
+        INTO the prompt, so the worker knows a running bit from a one-off
+        instead of guessing importance from the fragments alone. It is what
+        turns a one-off joke into an inside joke: the brief names the bit."""
+        if not brief and not kept and not noise:
+            return ""
+        lines = []
+        text = str((brief or {}).get("content") or "").strip()
+        if text:
+            who = ("pulled from the fragments by a small model" if (brief or {}).get("_pulled")
+                   else "written by the main model, who was there")
+            lines.append(f"The brief for this period ({who}):\n{text[:900]}")
+        if kept:
+            lines.append("The brief names THIS topic as worth keeping (" + "; ".join(kept[:6]) +
+                         "): a running bit or a real lesson deserves a core or an attach even from few fragments.")
+        if noise:
+            lines.append("The brief names THIS topic as noise (" + "; ".join(noise[:6]) +
+                         "): a one-off; propose nothing unless the fragments plainly outgrow that call.")
+        return "\n\n".join(lines)
+
     def _draft_cluster(self, topic: Optional[str], entries: list[dict[str, Any]],
-                       candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                       candidates: list[dict[str, Any]], steer: str = "") -> list[dict[str, Any]]:
         frag_lines = "\n".join(f"[{i}] {(e.get('content') or '')[:400]}" for i, e in enumerate(entries))
         core_lines = "\n".join(f"({c['id']}) {c['content'][:300]}" for c in candidates) or "(none)"
+        steer_block = f"\n\nSteer:\n{steer}" if steer else ""
         prompt = (
             "You are a memory consolidator's drafting worker. Below are short-term memory fragments "
             "about one topic, and the existing long-term CORES closest to them. Propose operations on "
@@ -426,10 +674,14 @@ class Hippocampus:
             "nothing existing covers it (content = one durable statement, present tense, no preamble). "
             "verbatim = only when the exact wording is the point. Use core ids exactly as given and never "
             "invent one. Every operation lists the fragment indexes it is built from. Fewer, better "
-            "operations beat many.\n\n"
+            "operations beat many. Weigh the steer when there is one: it says what mattered, which the "
+            "fragments alone cannot."
+            f"{steer_block}\n\n"
             f"Topic: {topic or 'untagged'}\n\nFragments:\n{frag_lines}\n\nExisting cores:\n{core_lines}\n\nJSON:")
         try:
             raw = self._call_model(prompt)
+        except ModelUnavailable:
+            raise                                          # the sleep fails and keeps its brief
         except Exception as e:  # noqa: BLE001
             self._log(f"draft model call failed ({e})")
             return []
@@ -492,23 +744,26 @@ class Hippocampus:
     def _tend(self) -> dict[str, Any]:
         start = time.time()
         report: dict[str, Any] = {"started_at": start, "examined": 0, "resubmitted": [],
-                                  "ended": [], "error": None}
+                                  "ended": [], "closed": [], "error": None}
         try:
             reviewed = self._mem.dockets(status="reviewed")
             report["examined"] = len(reviewed)
             for d in reviewed:
                 denied = [op for op in (d.get("operations") or []) if op.get("status") == "denied"]
-                if not denied:
-                    continue
                 cluster_id = d.get("cluster_id") or d["id"]
                 chain = self._mem.docket_chain(d["id"])
                 if any(int(x.get("attempt", 1)) > int(d.get("attempt", 1)) for x in chain):
                     continue                                   # already resubmitted
-                if d.get("terminal"):
-                    report["ended"].append(cluster_id)         # the chain is spent; shorts stay
-                    if cluster_id not in (self.state.get("ended_chains") or []):
-                        self.state["ended_chains"] = (self.state.get("ended_chains") or [])[-200:] + [cluster_id]
-                        self._emit("chain_ended", cluster_id=cluster_id, docket_id=d["id"])
+                if not denied or d.get("terminal"):
+                    # The chain has landed (every verdict in, approvals applied) or
+                    # is spent (the last attempt denied): cull.
+                    if denied:
+                        report["ended"].append(cluster_id)     # shorts stay for a later sleep
+                        if cluster_id not in (self.state.get("ended_chains") or []):
+                            self.state["ended_chains"] = (self.state.get("ended_chains") or [])[-200:] + [cluster_id]
+                            self._emit("chain_ended", cluster_id=cluster_id, docket_id=d["id"])
+                    self._close_chain(d, chain)
+                    report["closed"].append(cluster_id)
                     continue
                 new_ops = self._redraft(denied)
                 if not new_ops:
@@ -532,7 +787,8 @@ class Hippocampus:
             self._log(f"tend error: {report['error']}")
         report["finished_at"] = time.time()
         self.state["last_tend"] = report
-        self._remember_run("tend", report, resubmitted=len(report["resubmitted"]), ended=len(report["ended"]))
+        self._remember_run("tend", report, resubmitted=len(report["resubmitted"]), ended=len(report["ended"]),
+                           closed=len(report["closed"]))
         self._save_state()
         return report
 
@@ -557,6 +813,8 @@ class Hippocampus:
                 f"Critique: {op.get('critique')}\n\nJSON:")
             try:
                 parsed = self._json_from(self._call_model(prompt))
+            except ModelUnavailable:
+                raise                                      # tend records it; the chain waits for the model
             except Exception as e:  # noqa: BLE001
                 self._log(f"redraft model call failed ({e})")
                 continue

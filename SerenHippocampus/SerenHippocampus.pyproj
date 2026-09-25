@@ -22,6 +22,19 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="SerenHippocampus.py" />
+    <Compile Include="seren_hippocampus\app.py" />
+    <Compile Include="seren_hippocampus\config.py" />
+    <Compile Include="seren_hippocampus\memory_client.py" />
+    <Compile Include="seren_hippocampus\sleep.py" />
+    <Compile Include="seren_hippocampus\_version.py" />
+    <Compile Include="seren_hippocampus\__init__.py" />
+    <Compile Include="seren_hippocampus\__main__.py" />
+    <Compile Include="tests\conftest.py" />
+    <Compile Include="tests\test_sleep.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="seren_hippocampus\" />
+    <Folder Include="tests\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

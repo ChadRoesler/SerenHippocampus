@@ -47,7 +47,7 @@ function renderOverview(root, status, queue) {
     $('stats').innerHTML = [
         stat('last sleep', last ? (last.error ? 'failed' : 'ok') : 'never', last ? (last.error ? 'bad' : 'ok') : ''),
         stat('when', last ? relAge(last.finished_at) : '-'),
-        stat('next sleep', status.next_sleep_at ? relAge(status.next_sleep_at) : (status.mode === 'external' ? 'external' : '-')),
+        stat('bedtime', status.bedtime_at ? relAge(status.bedtime_at) : '-'),
         stat('waiting for review', pendingOps, pendingOps ? 'ok' : ''),
         stat('last tend', tend ? (tend.error ? 'failed' : `${(tend.resubmitted || []).length} resubmitted`) : 'never', tend && tend.error ? 'bad' : ''),
     ].join('');
@@ -59,6 +59,12 @@ function renderOverview(root, status, queue) {
     if (last && last.catch_up && !last.error) lines.push(`The last sleep was a <b>catch-up</b> after a long gap${status.catch_up_next ? '' : ''}: it drafted and purged but aged nothing out, so anything that never had its chance is still there for review.`);
     if (status.catch_up_next && !(last && last.catch_up)) lines.push(`The next sleep will be a <b>catch-up</b>: it has been a while, so it will draft but not age anything out.`);
     if (status.sleep_at) lines.push(`Sleeps happen daily at <b>${escapeHtml(status.sleep_at)}</b> local time.`);
+    const chk = status.last_check || null;
+    if (chk && chk.status === 'waiting_for_brief') lines.push(`It is past bedtime and <b>no brief has arrived</b>${chk.misses ? ` (${escapeHtml(chk.misses)} check${chk.misses === 1 ? '' : 's'} so far)` : ''}. The hippocampus sleeps only on a brief: write one with submit_brief and the next check will draft on it.`);
+    if (chk && chk.status === 'chain_open') lines.push(`A brief is waiting, but a docket is <b>still under review</b>. The sleep starts once that chain has landed.`);
+    if (chk && chk.status === 'not_bedtime') lines.push(`Not bedtime yet. A brief written now would start a sleep on the next check.`);
+    if (status.brief_wanted) lines.push(`The hippocampus has <b>asked for a brief</b> before the sleep due ${escapeHtml(status.sleep_due_at ? relAge(status.sleep_due_at) : 'soon')}; the note is waiting in Memory's near-term tier and none has arrived yet.`);
+    if (last && !last.error && last.brief_requested) lines.push(last.brief_answered ? `The last sleep ran on a brief <b>the main model wrote</b>.` : `The last sleep asked for a brief and <b>none came</b>, so the small model pulled one from the fragments.`);
     if (last && !last.error && !last.quiet) lines.push(`The last sleep purged ${last.purged} flagged memor${last.purged === 1 ? 'y' : 'ies'}, looked at ${last.clusters} topic${last.clusters === 1 ? '' : 's'}, and proposed ${last.operations} operation${last.operations === 1 ? '' : 's'}${last.docket_id ? ' in one docket' : ''}${last.held_back ? `; ${last.held_back} short-term memories were already waiting on an earlier docket` : ''}.`);
     if (!status.model_configured) lines.push(`No small model is wired, so the hippocampus runs <b>mechanically</b>: topics with enough evidence become new cores, verbatim memories are kept as they are, and nothing is proposed as evidence for, or a replacement of, an existing memory - those are judgements.`);
     if (status.mode === 'external') lines.push(`Mode is <b>external</b>: nothing here runs on a timer. Something else posts /sleep and /tend, or you press the buttons.`);

@@ -81,6 +81,28 @@ class MemoryClient:
     def submit_docket(self, docket: dict[str, Any]) -> dict[str, Any]:
         return self._req("POST", "/dockets", json=docket)
 
+    # ── near-term intents: how the hippocampus leaves the model a note ──
+    def add_near(self, intent: str, topic: Optional[str] = None, trigger_type: str = "always",
+                 trigger_value: Optional[str] = None, expires_at: Optional[float] = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"intent": intent, "topic": topic, "trigger_type": trigger_type,
+                                "trigger_value": trigger_value}
+        if expires_at is not None:
+            body["expires_at"] = expires_at
+        return self._req("POST", "/near", json=body)
+
+    def list_near(self, include_completed: bool = False) -> list[dict[str, Any]]:
+        got = self._req("GET", "/near", params={"include_completed": str(include_completed).lower()})
+        return list(got.get("entries") or []) if isinstance(got, dict) else []
+
+    def complete_near(self, entry_id: str) -> dict[str, Any]:
+        return self._req("POST", f"/near/{entry_id}/complete")
+
+    def consume_brief(self, brief_id: str, docket_id: Optional[str] = None) -> dict[str, Any]:
+        return self._req("POST", f"/brief/{brief_id}/consume", json={"docket_id": docket_id})
+
+    def close_docket(self, docket_id: str) -> dict[str, Any]:
+        return self._req("POST", f"/dockets/{docket_id}/close")
+
     def tidy(self, *, age_out: bool, near: bool, sweep: bool, purge: bool) -> dict[str, Any]:
         return self._req("POST", "/tidy", json={"age_out": age_out, "near": near,
                                                 "sweep": sweep, "purge": purge})
