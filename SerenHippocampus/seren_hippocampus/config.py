@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from seren_meninges import resolve_token
 from seren_meninges.config import ServerConfig as _SharedServer, apply_env_overrides, read_yaml
@@ -89,13 +89,19 @@ class ModelLifecycleConfig(BaseModel):
 
 
 class ModelConfig(BaseModel):
-    """The small model. Empty url = mechanical mode: dockets are built from
+    """The small model. Empty url = mechanical mode: drafts are built from
     thresholds and verbatim flags alone, with no attach / supersede, because
     those are judgement calls."""
     url: str = "http://localhost:8090/v1"
     name: str = "default"
     timeout_seconds: int = 120
     max_tokens: int = 900
+    # Merged into every chat request. The default turns OFF the "thinking"
+    # of Qwen3-style models (llama.cpp and vLLM honour chat_template_kwargs;
+    # servers that do not know it ignore it). Seen live 25 Sept 2026: a 2B
+    # model spent every token of a redraft on hidden reasoning at 4.7 tok/s,
+    # hit the timeout, and never wrote the JSON. {} sends nothing extra.
+    extra_body: dict = Field(default_factory=lambda: {"chat_template_kwargs": {"enable_thinking": False}})
     lifecycle: ModelLifecycleConfig = Field(default_factory=ModelLifecycleConfig)
 
 
@@ -111,7 +117,7 @@ class SleepConfig(BaseModel):
     # A topic cluster needs this many short-terms to be proposed at all,
     # unless a brief hint, a pin or a verbatim flag says otherwise.
     promote_min_evidence: int = 3
-    # Attempts per chain before the last docket is submitted terminal (the
+    # Attempts per chain before the last draft is submitted terminal (the
     # reviewer may then edit on approve).
     max_attempts: int = 3
     # How many existing cores to show the model per cluster as attach /
@@ -154,9 +160,15 @@ class NotifyConfig(BaseModel):
     bearer_token: str = Field(default="", repr=False)
     bearer_token_env: str = ""
     bearer_token_keyring: str = ""
-    # Which events go out. Everything the service emits: docket_submitted,
+    # Which events go out. Everything the service emits: draft_submitted,
     # sleep_failed, sleep_done, tend_resubmitted, chain_ended, purged, catch_up.
-    events: list[str] = Field(default_factory=lambda: ["docket_submitted", "sleep_failed", "chain_ended", "purged"])
+    events: list[str] = Field(default_factory=lambda: ["draft_submitted", "sleep_failed", "chain_ended", "purged"])
+
+    @field_validator("events")
+    @classmethod
+    def _renamed_events(cls, v: list[str]) -> list[str]:
+        # docket_submitted until 25 Sept 2026; a config naming it still subscribes
+        return ["draft_submitted" if e == "docket_submitted" else e for e in v]
     timeout_seconds: float = 10.0
 
     def resolve_bearer(self) -> str:

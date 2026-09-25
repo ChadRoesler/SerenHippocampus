@@ -43,7 +43,7 @@ function renderOverview(root, status, queue) {
     const tend = status.last_tend || null;
     const stat = (label, value, cls = '') =>
         `<div class="stat ${cls}"><div class="big">${escapeHtml(value)}</div><div class="lbl">${escapeHtml(label)}</div></div>`;
-    const pendingOps = (queue.dockets || []).reduce((n, d) => n + (d.operations || []).filter(o => o.status === 'pending').length, 0);
+    const pendingOps = (queue.drafts || []).reduce((n, d) => n + (d.operations || []).filter(o => o.status === 'pending').length, 0);
     $('stats').innerHTML = [
         stat('last sleep', last ? (last.error ? 'failed' : 'ok') : 'never', last ? (last.error ? 'bad' : 'ok') : ''),
         stat('when', last ? relAge(last.finished_at) : '-'),
@@ -61,11 +61,11 @@ function renderOverview(root, status, queue) {
     if (status.sleep_at) lines.push(`Sleeps happen daily at <b>${escapeHtml(status.sleep_at)}</b> local time.`);
     const chk = status.last_check || null;
     if (chk && chk.status === 'waiting_for_brief') lines.push(`It is past bedtime and <b>no brief has arrived</b>${chk.misses ? ` (${escapeHtml(chk.misses)} check${chk.misses === 1 ? '' : 's'} so far)` : ''}. The hippocampus sleeps only on a brief: write one with submit_brief and the next check will draft on it.`);
-    if (chk && chk.status === 'chain_open') lines.push(`A brief is waiting, but a docket is <b>still under review</b>. The sleep starts once that chain has landed.`);
+    if (chk && chk.status === 'chain_open') lines.push(`A brief is waiting, but a draft is <b>still under review</b>. The sleep starts once that chain has landed.`);
     if (chk && chk.status === 'not_bedtime') lines.push(`Not bedtime yet. A brief written now would start a sleep on the next check.`);
     if (status.brief_wanted) lines.push(`The hippocampus has <b>asked for a brief</b> before the sleep due ${escapeHtml(status.sleep_due_at ? relAge(status.sleep_due_at) : 'soon')}; the note is waiting in Memory's near-term tier and none has arrived yet.`);
     if (last && !last.error && last.brief_requested) lines.push(last.brief_answered ? `The last sleep ran on a brief <b>the main model wrote</b>.` : `The last sleep asked for a brief and <b>none came</b>, so the small model pulled one from the fragments.`);
-    if (last && !last.error && !last.quiet) lines.push(`The last sleep purged ${last.purged} flagged memor${last.purged === 1 ? 'y' : 'ies'}, looked at ${last.clusters} topic${last.clusters === 1 ? '' : 's'}, and proposed ${last.operations} operation${last.operations === 1 ? '' : 's'}${last.docket_id ? ' in one docket' : ''}${last.held_back ? `; ${last.held_back} short-term memories were already waiting on an earlier docket` : ''}.`);
+    if (last && !last.error && !last.quiet) lines.push(`The last sleep purged ${last.purged} flagged memor${last.purged === 1 ? 'y' : 'ies'}, looked at ${last.clusters} topic${last.clusters === 1 ? '' : 's'}, and proposed ${last.operations} operation${last.operations === 1 ? '' : 's'}${last.draft_id ? ' in one draft' : ''}${last.held_back ? `; ${last.held_back} short-term memories were already waiting on an earlier draft` : ''}.`);
     if (!status.model_configured) lines.push(`No small model is wired, so the hippocampus runs <b>mechanically</b>: topics with enough evidence become new cores, verbatim memories are kept as they are, and nothing is proposed as evidence for, or a replacement of, an existing memory - those are judgements.`);
     if (status.mode === 'external') lines.push(`Mode is <b>external</b>: nothing here runs on a timer. Something else posts /sleep and /tend, or you press the buttons.`);
     $('explain').innerHTML = lines.length ? lines.map(l => `<p class="hint">${l}</p>`).join('') : `<p class="hint">Quiet and healthy.</p>`;
@@ -80,14 +80,14 @@ function renderReports(status) {
     const s = status.last_sleep;
     $('sleep-report').innerHTML = !s ? `<div class="empty">No sleep has run yet.</div>` :
         `<div class="entry ${s.error ? 'bad' : ''}">${s.error ? `<div class="content"><b>Stopped:</b> ${escapeHtml(s.error)}</div>` : ''}
-            ${kvTable(s, ['started_at', 'finished_at', 'duration_seconds', 'quiet', 'catch_up', 'purged', 'brief_id', 'brief_pulled', 'clusters', 'operations', 'docket_id', 'held_back'])}
+            ${kvTable(s, ['started_at', 'finished_at', 'duration_seconds', 'quiet', 'catch_up', 'purged', 'brief_id', 'brief_pulled', 'clusters', 'operations', 'draft_id', 'held_back'])}
             ${s.tidy ? `<div class="meta"><span class="badge">tidy</span> aged out ${s.tidy.aged_out ?? '-'} · near expired ${(s.tidy.near || {}).expired ?? '-'} · completed ${(s.tidy.near || {}).completed_promoted ?? '-'} · pruned swept ${s.tidy.pruned_swept ?? '-'}</div>` : ''}
          </div>`;
     const t = status.last_tend;
     $('tend-report').innerHTML = !t ? `<div class="empty">No tend has run yet.</div>` :
         `<div class="entry ${t.error ? 'bad' : ''}">${t.error ? `<div class="content"><b>Stopped:</b> ${escapeHtml(t.error)}</div>` : ''}
             ${kvTable(t, ['started_at', 'finished_at', 'examined'])}
-            <div class="meta">${(t.resubmitted || []).length ? t.resubmitted.map(r => `<span class="badge pending">attempt ${r.attempt}</span> ${r.operations} op(s) · <code class="id">${escapeHtml(r.docket_id)}</code>`).join(' ') : 'nothing needed a redraft'}
+            <div class="meta">${(t.resubmitted || []).length ? t.resubmitted.map(r => `<span class="badge pending">attempt ${r.attempt}</span> ${r.operations} op(s) · <code class="id">${escapeHtml(r.draft_id)}</code>`).join(' ') : 'nothing needed a redraft'}
             ${(t.ended || []).length ? ` · <span class="badge denied">${t.ended.length} chain(s) ended</span>` : ''}</div>
          </div>`;
 }
@@ -105,7 +105,7 @@ function opCard(op) {
     </div>`;
 }
 
-function docketCard(d) {
+function draftCard(d) {
     const pending = (d.operations || []).filter(o => o.status === 'pending').length;
     return `<div class="entry">
         <div class="meta"><span class="badge pending">${pending} waiting</span><span class="badge">attempt ${escapeHtml(d.attempt)}</span>
@@ -120,8 +120,8 @@ function renderQueue(queue) {
         $('queue-list').innerHTML = `<div class="err">⚠ ${escapeHtml(queue.error)}<span class="hint">The queue lives in SerenMemory; this page could not read it.</span></div>`;
         return;
     }
-    const ds = queue.dockets || [];
-    $('queue-list').innerHTML = ds.length ? ds.map(docketCard).join('') : `<div class="empty">Nothing is waiting for review.</div>`;
+    const ds = queue.drafts || [];
+    $('queue-list').innerHTML = ds.length ? ds.map(draftCard).join('') : `<div class="empty">Nothing is waiting for review.</div>`;
 }
 
 function renderEvents(ev) {
@@ -131,7 +131,7 @@ function renderEvents(ev) {
     el.innerHTML = rows.length ? rows.map(e => `<div class="entry ${e.event === 'sleep_failed' ? 'bad' : ''}">
         <div class="meta"><span class="badge ${e.event === 'sleep_failed' ? 'denied' : 'pending'}">${escapeHtml(e.event.replace(/_/g, ' '))}</span>
             <span>${escapeHtml(fmtTs(e.at))}</span>
-            ${e.docket_id ? `<code class="id">${escapeHtml(e.docket_id)}</code>` : ''}
+            ${e.draft_id ? `<code class="id">${escapeHtml(e.draft_id)}</code>` : ''}
             ${e.operations != null ? `<span>${escapeHtml(e.operations)} op(s)</span>` : ''}
             ${e.count != null ? `<span>${escapeHtml(e.count)} purged</span>` : ''}
             ${e.attempt != null ? `<span>attempt ${escapeHtml(e.attempt)}${e.terminal ? ' (terminal)' : ''}</span>` : ''}
@@ -153,12 +153,12 @@ function renderHistory(hist) {
 // ----------------------------------------------------------------------------
 async function load() {
     clearError();
-    let root = {}, status = {}, queue = { dockets: [] }, hist = { entries: [] }, events = { entries: [] };
+    let root = {}, status = {}, queue = { drafts: [] }, hist = { entries: [] }, events = { entries: [] };
     try { root = await api('/'); } catch (e) { showError(`This service did not answer: ${e.message}`); return; }
     try { root.memory_reachable = (await api('/health')).memory_reachable; } catch (e) { root.memory_reachable = false; }
     try { status = await api('/status'); }
     catch (e) { showError(`Could not read /status: ${e.message}`, 'If this service has a bearer token, set it via 🔑 Token.'); return; }
-    try { queue = await api('/queue'); } catch (e) { queue = { dockets: [], error: e.message }; }
+    try { queue = await api('/queue'); } catch (e) { queue = { drafts: [], error: e.message }; }
     try { hist = await api('/history'); } catch (e) { hist = { entries: [] }; }
     try { events = await api('/events'); } catch (e) { events = { entries: [] }; }
     renderPills(root, status);

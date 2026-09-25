@@ -48,6 +48,11 @@ class MemoryClient:
     def shorts(self, limit: int = 500) -> list[dict[str, Any]]:
         return list(self._req("GET", "/short", params={"limit": limit}).get("entries") or [])
 
+    def open_briefs(self, limit: int = 50) -> list[dict[str, Any]]:
+        got = self._req("GET", "/brief", params={"limit": limit})
+        rows = got.get("entries") if isinstance(got, dict) else got
+        return list(rows or [])
+
     def latest_brief(self) -> Optional[dict[str, Any]]:
         got = self._req("GET", "/brief", params={"limit": 1})
         rows = got.get("entries") if isinstance(got, dict) else got
@@ -61,14 +66,14 @@ class MemoryClient:
         })
         return [h for h in (got.get("hits") or []) if h.get("tier") == "long"]
 
-    def dockets(self, status: Optional[str] = None, limit: int = 200) -> list[dict[str, Any]]:
+    def drafts(self, status: Optional[str] = None, limit: int = 200) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"limit": limit}
         if status:
             params["status"] = status
-        return list(self._req("GET", "/dockets", params=params).get("entries") or [])
+        return list(self._req("GET", "/drafts", params=params).get("entries") or [])
 
-    def docket_chain(self, docket_id: str) -> list[dict[str, Any]]:
-        return list(self._req("GET", f"/dockets/{docket_id}/chain").get("attempts") or [])
+    def draft_chain(self, draft_id: str) -> list[dict[str, Any]]:
+        return list(self._req("GET", f"/drafts/{draft_id}/chain").get("attempts") or [])
 
     # -- writes --------------------------------------------------------------------
     def submit_brief(self, summary: str, promote_hints: list[str], noise_hints: list[str],
@@ -78,8 +83,8 @@ class MemoryClient:
             "noise_hints": noise_hints, "completed_intents": completed_intents,
         })
 
-    def submit_docket(self, docket: dict[str, Any]) -> dict[str, Any]:
-        return self._req("POST", "/dockets", json=docket)
+    def submit_draft(self, draft: dict[str, Any]) -> dict[str, Any]:
+        return self._req("POST", "/drafts", json=draft)
 
     # ── near-term intents: how the hippocampus leaves the model a note ──
     def add_near(self, intent: str, topic: Optional[str] = None, trigger_type: str = "always",
@@ -97,11 +102,11 @@ class MemoryClient:
     def complete_near(self, entry_id: str) -> dict[str, Any]:
         return self._req("POST", f"/near/{entry_id}/complete")
 
-    def consume_brief(self, brief_id: str, docket_id: Optional[str] = None) -> dict[str, Any]:
-        return self._req("POST", f"/brief/{brief_id}/consume", json={"docket_id": docket_id})
+    def consume_brief(self, brief_id: str, draft_id: Optional[str] = None) -> dict[str, Any]:
+        return self._req("POST", f"/brief/{brief_id}/consume", json={"draft_id": draft_id})
 
-    def close_docket(self, docket_id: str) -> dict[str, Any]:
-        return self._req("POST", f"/dockets/{docket_id}/close")
+    def close_draft(self, draft_id: str) -> dict[str, Any]:
+        return self._req("POST", f"/drafts/{draft_id}/close")
 
     def tidy(self, *, age_out: bool, near: bool, sweep: bool, purge: bool) -> dict[str, Any]:
         return self._req("POST", "/tidy", json={"age_out": age_out, "near": near,

@@ -1,6 +1,6 @@
 """A stand-in model server for the lifecycle tests: a real process on a real
 port. /health answers 200; /v1/chat/completions answers a one-operation
-docket draft (or a redraft), in the OpenAI shape. Standard library only."""
+draft (or a redraft), in the OpenAI shape. Standard library only."""
 from __future__ import annotations
 
 import json
@@ -28,7 +28,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
-        prompt = json.loads(self.rfile.read(n) or b"{}")["messages"][0]["content"]
+        body = json.loads(self.rfile.read(n) or b"{}")
+        prompt = body["messages"][0]["content"]
+        # Like a Qwen3-style model: unless asked not to, it thinks, and the
+        # visible answer is empty. The hippocampus must send enable_thinking=false.
+        if (body.get("chat_template_kwargs") or {}).get("enable_thinking") is not False:
+            self._send(200, {"choices": [{"message": {"content": "", "reasoning_content": "hmm " * 50}}]})
+            return
         if "DENIED" in prompt:
             content = json.dumps({"content": "restated", "rationale": "from the critique"})
         else:

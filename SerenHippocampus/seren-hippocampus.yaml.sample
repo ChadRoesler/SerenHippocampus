@@ -1,7 +1,7 @@
 # SerenHippocampus config - copy to ~/seren-hippocampus/seren-hippocampus.yaml
 #
 # The hippocampus is SerenMemory's sleep cycle, split out. It holds no store:
-# it reads short-terms from Memory, writes dockets to Memory, and purges what
+# it reads short-terms from Memory, writes drafts to Memory, and purges what
 # was flagged. Two loops: sleep (~20h) and tend (every few minutes, picks up
 # denied operations and resubmits them).
 
@@ -60,7 +60,7 @@ sleep:
   tend_interval_seconds: 300
   max_entries_per_run: 500
   promote_min_evidence: 3  # short-terms a topic needs before it is proposed (hints, pins, verbatim override)
-  max_attempts: 3          # dockets per chain before the last one is submitted terminal
+  max_attempts: 3          # drafts per chain before the last one is submitted terminal
   candidate_cores: 5       # existing cores shown to the model per cluster
   state_path: ~/.seren-hippocampus/state.json
 
@@ -70,5 +70,5 @@ notify:
   # JSON - Lodestar, Symposium, or a messaging bridge sits at the other end.
   # webhook_url: http://127.0.0.1:6361/hooks/hippocampus
   # bearer_token_env: SEREN_HIPPOCAMPUS_WEBHOOK_TOKEN
-  events: [docket_submitted, sleep_failed, chain_ended, purged]
+  events: [draft_submitted, sleep_failed, chain_ended, purged]
   timeout_seconds: 10

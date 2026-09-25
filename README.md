@@ -2,7 +2,7 @@
 
 The sleep cycle for [SerenMemory](https://github.com/ChadRoesler/SerenMemory),
 split out into its own service. It holds no store. It reads short-term
-memories from Memory, writes **dockets** to Memory, resubmits what the
+memories from Memory, writes **drafts** to Memory, resubmits what the
 reviewer denied, and purges what was flagged.
 
 Port **7424**, the last slot in the brain band (Memory 7420, Margin 7421,
@@ -10,9 +10,17 @@ Loci 7422, Corpus Callosum 7423).
 
 ## The shape
 
-A draft is not one synthesis that becomes one long-term entry. A draft is a
-**docket**: a list of operations on long-term, each reviewed on its own by
-the main model.
+What a sleep proposes is not one synthesis that becomes one long-term entry.
+It is a **draft**: a list of operations on long-term, each reviewed on its
+own by the main model.
+
+(Called a *docket* until 25 Sept 2026. In Probe and the Corpus Callosum a
+docket is the briefing packet a search hands back, so here it is a draft.
+This version talks to Memory's `/drafts` routes, which Memory has only from
+the same date: **upgrade Memory first**. Memory keeps `/dockets` as an alias
+for a release, so an older hippocampus keeps working against a newer
+Memory, not the other way round. A `notify.events` list that still names
+`docket_submitted` subscribes to `draft_submitted`.)
 
 | operation    | what it means                                                                 |
 |--------------|-------------------------------------------------------------------------------|
@@ -25,9 +33,9 @@ Long-term is **a core and its surroundings**. Recall returns cores.
 Satellites are the supporting episodes with their dates; a superseded core
 keeps `superseded_by` pointing forward.
 
-The small model (the Inside Out workers) drafts the docket. The main model
-reviews it per operation through Memory (`POST /dockets/{id}/review`, or the
-`review_docket` MCP tool), approving or denying with a critique. Memory
+The small model (the Inside Out workers) writes the draft. The main model
+reviews it per operation through Memory (`POST /drafts/{id}/review`, or the
+`review_draft` MCP tool), approving or denying with a critique. Memory
 applies what is approved. Denied operations come back here: the **tend**
 loop redrafts them from the critique and resubmits as the next attempt. The
 last permitted attempt is submitted `terminal`, which is the reviewer's cue
@@ -43,10 +51,10 @@ the emergency.
 
 Every few minutes (`tend_interval_seconds`) one tick runs, two steps:
 
-- **tend**: reviewed dockets with denied operations and no later attempt
+- **tend**: reviewed drafts with denied operations and no later attempt
   in their chain get redrafted from the critique and resubmitted; a chain
   whose every operation has a verdict (or whose last attempt was denied) is
-  **culled** - the dockets closed, the brief that opened it consumed, the
+  **culled** - the drafts closed, the brief that opened it consumed, the
   review note completed, a `chain_closed` event.
 - **check**: purge what was flagged; then ask Memory for an open brief.
   One there and no chain open means **sleep now**. None means wait.
@@ -54,10 +62,10 @@ Every few minutes (`tend_interval_seconds`) one tick runs, two steps:
 **The brief is the gate.** The hippocampus never drafts on its own clock. A
 sleep: group the free short-terms by topic, show the small model each
 cluster with the nearest existing cores and the brief as the steer, submit
-one docket, leave a review note in Memory naming it, then the mechanical
+one draft, leave a review note in Memory naming it, then the mechanical
 tidy (age out, maintain near-term, sweep pruned). Short-terms a pending
-docket already holds are left alone. One chain at a time: a brief that
-arrives while a docket is under review waits its turn.
+draft already holds are left alone. One chain at a time: a brief that
+arrives while a draft is under review waits its turn.
 
 `sleep.mode: thread` runs the tick here; `external` means something else
 POSTs `/tend` and `/check` (or `/sleep` by hand).
@@ -171,7 +179,7 @@ Seren service.
 
 ## Saying what happened
 
-Every sleep and tend leaves **events**: `docket_submitted` (with the docket
+Every sleep and tend leaves **events**: `draft_submitted` (with the draft
 id and its operation count), `sleep_failed`, `sleep_done`, `purged` (ids,
 never content), `tend_resubmitted`, `chain_ended`, `catch_up`. They are kept
 on the service (`GET /events`, the History tab) whatever else is configured.
@@ -181,7 +189,7 @@ JSON with the configured bearer, best effort: a webhook that does not answer
 is recorded on the event and never fails the sleep. This is the seed of
 "shoot me a text": Lodestar, Symposium, or a messaging bridge sits at the
 other end and decides who to tell. Until something does, the reviewer pulls -
-`list_dockets` on Memory at the start of a session shows what is waiting.
+`list_drafts` on Memory at the start of a session shows what is waiting.
 
 ## The window
 

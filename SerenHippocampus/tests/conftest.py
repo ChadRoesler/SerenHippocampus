@@ -132,8 +132,8 @@ def short(memory: TestClient, content: str, topic: str = "t", **extra) -> str:
     return r.json()["id"]
 
 
-def review(memory: TestClient, docket_id: str, decisions: list[dict]) -> dict:
-    r = memory.post(f"/dockets/{docket_id}/review", json={"decisions": decisions})
+def review(memory: TestClient, draft_id: str, decisions: list[dict]) -> dict:
+    r = memory.post(f"/drafts/{draft_id}/review", json={"decisions": decisions})
     assert r.status_code == 200, r.text
     return r.json()
 

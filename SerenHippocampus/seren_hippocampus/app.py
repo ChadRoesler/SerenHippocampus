@@ -84,7 +84,7 @@ def create_app(config: Optional[HippocampusConfig] = None,
                 mem.close()
 
     app = FastAPI(title="SerenHippocampus", version=__version__, lifespan=lifespan,
-                  description="The sleep cycle for SerenMemory: drafts the docket, resubmits on critique, purges what was flagged.")
+                  description="The sleep cycle for SerenMemory: drafts what should be kept, resubmits on critique, purges what was flagged.")
 
     @app.get("/")
     async def root(request: Request):
@@ -138,7 +138,7 @@ def create_app(config: Optional[HippocampusConfig] = None,
 
     @app.get("/events")
     async def events(request: Request):
-        """What happened, newest first: dockets submitted, sleeps failed,
+        """What happened, newest first: drafts submitted, sleeps failed,
         chains ended, purges. The same events go to notify.webhook_url when
         one is configured; each says whether that delivery worked."""
         h: Hippocampus = request.app.state.hippocampus
@@ -160,10 +160,10 @@ def create_app(config: Optional[HippocampusConfig] = None,
         second token. A Memory that does not answer is reported, not raised."""
         mem: MemoryClient = request.app.state.memory
         try:
-            rows = await asyncio.to_thread(mem.dockets, "pending", 50)
+            rows = await asyncio.to_thread(mem.drafts, "pending", 50)
         except MemoryError as e:
-            return {"count": 0, "dockets": [], "error": str(e)}
-        return {"count": len(rows), "dockets": rows}
+            return {"count": 0, "drafts": [], "error": str(e)}
+        return {"count": len(rows), "drafts": rows}
 
     @app.get("/viewer")
     async def viewer():
@@ -177,7 +177,7 @@ def create_app(config: Optional[HippocampusConfig] = None,
             Path(__file__).resolve().parent / "viewer" / "ui",
             title="SerenHippocampus",
             brand="Seren<b>Hippocampus</b> · the sleep",
-            subtitle=f"v{__version__} · drafts the docket, resubmits on critique, purges what was flagged",
+            subtitle=f"v{__version__} · drafts what should be kept, resubmits on critique, purges what was flagged",
             accent="#c9a0dc",
         )
         return HTMLResponse(html)

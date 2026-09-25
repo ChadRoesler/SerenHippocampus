@@ -3,14 +3,14 @@ The sleep and the tend, against the real SerenMemory.
 
 - mechanical sleep: clusters over the threshold become new_core operations,
   verbatim flags become verbatim operations, a cluster under the threshold
-  proposes nothing, and nothing is proposed for short-terms a pending docket
+  proposes nothing, and nothing is proposed for short-terms a pending draft
   already holds (the old consolidator re-drafted the same cluster every run)
 - with a model: the fragments and the nearest cores are shown, and an attach
   or supersede the model proposes lands as that operation with the real id;
-  an invented id is dropped, not the docket
+  an invented id is dropped, not the draft
 - tend: a denied operation is redrafted from its critique and resubmitted as
   the next attempt; the last permitted attempt is terminal; a denied terminal
-  docket ends the chain
+  draft ends the chain
 - purge: a flagged core is gone after the sleep, with a tombstone
 - the state file records the last sleep and tend
 - the app: /health, /status, POST /sleep, and 409 while one runs
@@ -38,8 +38,8 @@ def test_mechanical_sleep_proposes_cores_verbatim_and_respects_the_threshold(mem
 
     rep = h.sleep()
     assert rep["error"] is None, rep
-    assert rep["clusters"] == 3 and rep["operations"] == 2 and rep["docket_id"]
-    d = memory.get(f"/dockets/{rep['docket_id']}").json()
+    assert rep["clusters"] == 3 and rep["operations"] == 2 and rep["draft_id"]
+    d = memory.get(f"/drafts/{rep['draft_id']}").json()
     kinds = {op["kind"]: op for op in d["operations"]}
     assert set(kinds) == {"new_core", "verbatim"}
     assert kinds["new_core"]["content"] == "chad prefers tabs in makefiles, always"
@@ -51,18 +51,18 @@ def test_mechanical_sleep_proposes_cores_verbatim_and_respects_the_threshold(mem
     # a second sleep leaves the held short-terms alone
     rep2 = h.sleep()
     assert rep2["operations"] == 0 and rep2["held_back"] == 3
-    assert memory.get("/dockets", params={"status": "pending"}).json()["count"] == 1
+    assert memory.get("/drafts", params={"status": "pending"}).json()["count"] == 1
 
 
 def test_mechanical_sleep_never_proposes_attach_or_supersede(memory, make_hippo):
     h = make_hippo()
-    core = review(memory, memory.post("/dockets", json={"operations": [
+    core = review(memory, memory.post("/drafts", json={"operations": [
         {"kind": "new_core", "content": "Chad likes blue.", "topic": "color"}]}).json()["id"],
         [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
     short(memory, "chad likes blue a lot", "color")
     short(memory, "blue again, chad said", "color")
     rep = h.sleep()
-    d = memory.get(f"/dockets/{rep['docket_id']}").json()
+    d = memory.get(f"/drafts/{rep['draft_id']}").json()
     assert [op["kind"] for op in d["operations"]] == ["new_core"], "a threshold is not a judgement"
     assert core in cores(memory)
 
@@ -90,7 +90,7 @@ def _model_that_attaches(prompt: str) -> str:
 
 def test_model_sleep_shows_the_nearest_cores_and_lands_a_real_attach(memory, make_hippo):
     h = make_hippo(model=_model_that_attaches)
-    core = review(memory, memory.post("/dockets", json={"operations": [
+    core = review(memory, memory.post("/drafts", json={"operations": [
         {"kind": "new_core", "content": "Chad likes blue.", "topic": "color", "evidence_count": 2}]}).json()["id"],
         [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
     a = short(memory, "chad likes blue, picked the blue theme", "color")
@@ -98,7 +98,7 @@ def test_model_sleep_shows_the_nearest_cores_and_lands_a_real_attach(memory, mak
 
     rep = h.sleep()
     assert rep["error"] is None, rep
-    d = memory.get(f"/dockets/{rep['docket_id']}").json()
+    d = memory.get(f"/drafts/{rep['draft_id']}").json()
     assert len(d["operations"]) == 1, "the invented id was dropped, the real one kept"
     op = d["operations"][0]
     assert op["kind"] == "attach" and op["target_core_id"] == core
@@ -118,13 +118,13 @@ def test_model_sleep_can_supersede(memory, make_hippo):
                                         "content": "Chad likes yellow now.",
                                         "rationale": "he said so twice", "source_indexes": [0, 1]}]})
     h = make_hippo(model=model)
-    old = review(memory, memory.post("/dockets", json={"operations": [
+    old = review(memory, memory.post("/drafts", json={"operations": [
         {"kind": "new_core", "content": "Chad likes blue.", "topic": "color"}]}).json()["id"],
         [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
     short(memory, "chad likes yellow now, not blue", "color")
     short(memory, "yellow is the colour, chad says", "color")
     rep = h.sleep()
-    d = memory.get(f"/dockets/{rep['docket_id']}").json()
+    d = memory.get(f"/drafts/{rep['draft_id']}").json()
     assert d["operations"][0]["kind"] == "supersede" and d["operations"][0]["target_core_id"] == old
     res = review(memory, d["id"], [{"op": 0, "verdict": "approve"}])["results"][0]
     assert res["superseded"] == old
@@ -160,15 +160,15 @@ def test_tend_redrafts_denied_operations_until_the_chain_is_terminal(memory, mak
     h = make_hippo(model=model, max_attempts=3)
     short(memory, "chad prefers tabs in makefiles", "make")
     short(memory, "tabs again", "make")
-    first = h.sleep()["docket_id"]
+    first = h.sleep()["draft_id"]
 
     review(memory, first, [{"op": 0, "verdict": "deny", "critique": "too vague; say what he prefers and where"}])
     t = h.tend()
     assert t["error"] is None and len(t["resubmitted"]) == 1
     second = t["resubmitted"][0]
     assert second["attempt"] == 2
-    d2 = memory.get(f"/dockets/{second['docket_id']}").json()
-    assert d2["cluster_id"] == first and d2["previous_docket_ids"] == [first] and not d2["terminal"]
+    d2 = memory.get(f"/drafts/{second['draft_id']}").json()
+    assert d2["cluster_id"] == first and d2["previous_draft_ids"] == [first] and not d2["terminal"]
     assert d2["operations"][0]["content"].startswith("improved x1")
     assert d2["operations"][0]["kind"] == "new_core"
 
@@ -178,29 +178,29 @@ def test_tend_redrafts_denied_operations_until_the_chain_is_terminal(memory, mak
     t = h.tend()
     third = t["resubmitted"][0]
     assert third["attempt"] == 3
-    d3 = memory.get(f"/dockets/{third['docket_id']}").json()
+    d3 = memory.get(f"/drafts/{third['draft_id']}").json()
     assert d3["terminal"] is True, "the last permitted attempt is terminal"
-    chain = memory.get(f"/dockets/{d3['id']}/chain").json()
+    chain = memory.get(f"/drafts/{d3['id']}/chain").json()
     assert [a["attempt"] for a in chain["attempts"]] == [1, 2, 3]
 
     # the editor's release valve exists only now
-    r = memory.post(f"/dockets/{d3['id']}/review", json={"decisions": [
+    r = memory.post(f"/drafts/{d3['id']}/review", json={"decisions": [
         {"op": 0, "verdict": "approve", "edited_content": "Chad prefers tabs in makefiles."}]})
     assert r.status_code == 200, r.text
     entry = cores(memory)[r.json()["results"][0]["long_term_id"]]
     assert entry["content"] == "Chad prefers tabs in makefiles."
 
 
-def test_a_denied_terminal_docket_ends_the_chain(memory, make_hippo):
+def test_a_denied_terminal_draft_ends_the_chain(memory, make_hippo):
     def model(prompt: str) -> str:
         return as_json({"content": "again", "rationale": "x"}) if "DENIED" in prompt else \
             as_json({"operations": [{"kind": "new_core", "content": "x", "rationale": "x", "source_indexes": [0, 1]}]})
     h = make_hippo(model=model, max_attempts=2)
     short(memory, "a", "t"); short(memory, "b", "t")
-    first = h.sleep()["docket_id"]
+    first = h.sleep()["draft_id"]
     review(memory, first, [{"op": 0, "verdict": "deny", "critique": "no"}])
-    second = h.tend()["resubmitted"][0]["docket_id"]
-    assert memory.get(f"/dockets/{second}").json()["terminal"]
+    second = h.tend()["resubmitted"][0]["draft_id"]
+    assert memory.get(f"/drafts/{second}").json()["terminal"]
     review(memory, second, [{"op": 0, "verdict": "deny", "critique": "still no"}])
     t = h.tend()
     assert t["resubmitted"] == [] and t["ended"] == [first]
@@ -210,7 +210,7 @@ def test_a_denied_terminal_docket_ends_the_chain(memory, make_hippo):
 def test_tend_without_a_model_resubmits_nothing(memory, make_hippo):
     h = make_hippo()
     short(memory, "a", "t"); short(memory, "b", "t")
-    first = h.sleep()["docket_id"]
+    first = h.sleep()["draft_id"]
     review(memory, first, [{"op": 0, "verdict": "deny", "critique": "no"}])
     assert h.tend()["resubmitted"] == []
 
@@ -219,7 +219,7 @@ def test_tend_without_a_model_resubmits_nothing(memory, make_hippo):
 
 def test_sleep_purges_what_was_flagged(memory, make_hippo):
     h = make_hippo()
-    core = review(memory, memory.post("/dockets", json={"operations": [
+    core = review(memory, memory.post("/drafts", json={"operations": [
         {"kind": "new_core", "content": "the key is ssh-rsa AAAA", "topic": "oops"}]}).json()["id"],
         [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
     memory.post(f"/long/{core}/forget", json={"reason": "leaked key"})
@@ -251,7 +251,7 @@ def test_app_runs_a_sleep_and_refuses_a_second_at_once(memory, bridge, hcfg):
         r = tc.post("/sleep")
         assert r.status_code == 200 and r.json()["operations"] == 1
         st = tc.get("/status").json()
-        assert st["last_sleep"]["docket_id"] and st["mode"] == "external"
+        assert st["last_sleep"]["draft_id"] and st["mode"] == "external"
 
         h = app.state.hippocampus
         assert h._lock.acquire(blocking=False)          # hold the lock as if a sleep were mid-flight
@@ -276,11 +276,11 @@ def test_viewer_queue_and_history_serve_the_window(memory, bridge, hcfg):
         page = tc.get("/viewer")
         assert page.status_code == 200
         assert "Hippocampus" in page.text and "Waiting for review" in page.text and "#c9a0dc" in page.text
-        assert tc.get("/queue").json() == {"count": 0, "dockets": []}
+        assert tc.get("/queue").json() == {"count": 0, "drafts": []}
         short(memory, "a", "t"); short(memory, "b", "t")
         tc.post("/sleep"); tc.post("/tend")
         q = tc.get("/queue").json()
-        assert q["count"] == 1 and q["dockets"][0]["operations"][0]["status"] == "pending"
+        assert q["count"] == 1 and q["drafts"][0]["operations"][0]["status"] == "pending"
         h = tc.get("/history").json()
         assert [e["kind"] for e in h["entries"]] == ["tend", "sleep"], "newest first"
         assert h["entries"][1]["operations"] == 1 and h["entries"][1]["error"] is None
@@ -301,7 +301,7 @@ def test_queue_reports_an_unreachable_memory_instead_of_failing(hcfg):
     app = create_app(hcfg, memory_client=client)
     with TestClient(app) as tc:
         q = tc.get("/queue").json()
-        assert q["dockets"] == [] and "refused" in q["error"]
+        assert q["drafts"] == [] and "refused" in q["error"]
         assert tc.get("/health").json()["memory_reachable"] is False
         r = tc.post("/sleep").json()
         assert r["error"] and "refused" in r["error"], "a sleep against a dead Memory records why it stopped"
