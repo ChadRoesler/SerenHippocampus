@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from conftest import short
+from conftest import as_json, short
 
 HERE = Path(__file__).parent
 FAKE = HERE / "fake_model_server.py"
@@ -80,7 +80,7 @@ def test_a_sleep_starts_the_model_and_the_tick_stops_it_when_idle(memory, make_h
         rep = h.check()
         assert rep["status"] == "sleeping" and rep["sleep"]["error"] is None, rep
         assert rep["sleep"]["operations"] >= 1
-        ops = memory.get(f"/dockets/{rep['sleep']['docket_id']}").json()["operations"]
+        ops = memory.get(f"/drafts/{rep['sleep']['draft_id']}").json()["operations"]
         assert all("mechanical fallback" not in (op.get("rationale") or "") for op in ops), "drafted BY the model"
         assert h.model.started_by_us and h.model.state == "up"
         assert [e["event"] for e in h.state["events"]].count("model_started") == 1
@@ -129,7 +129,7 @@ def test_a_model_that_will_not_start_fails_the_sleep_and_keeps_the_brief(memory,
     rep = h.check()
     s = rep["sleep"]
     assert s["error"] and "exited with code 3" in s["error"], s
-    assert s["operations"] == 0 and s["docket_id"] is None, "no mechanical copy of the fragments"
+    assert s["operations"] == 0 and s["draft_id"] is None, "no mechanical copy of the fragments"
     assert [b["id"] for b in memory.get("/brief").json()["entries"]] == [bid], "the brief is kept for the next check"
     assert "model_start_failed" in [e["event"] for e in h.state["events"]]
     t0 = time.time()
@@ -145,7 +145,7 @@ def test_manage_off_and_the_model_down_is_an_honest_failure(memory, make_hippo):
     bid = _brief(memory, ["t"])
     rep = h.check()
     assert "manage is off" in (rep["sleep"]["error"] or "")
-    assert memory.get("/dockets").json()["count"] == 0
+    assert memory.get("/drafts").json()["count"] == 0
     assert [b["id"] for b in memory.get("/brief").json()["entries"]] == [bid]
 
 
@@ -192,3 +192,59 @@ def test_status_reports_the_model(memory, bridge, hcfg):
         ml = tc.get("/status").json()["model_lifecycle"]
         assert ml["managed"] is False and ml["health_url"] == "http://127.0.0.1:9/health"
     client.close()
+
+
+# ── no silent model failures ─────────────────────────────────────────────────
+
+def test_a_model_that_answers_garbage_fails_the_sleep_and_copies_nothing(memory, make_hippo):
+    """The first real draft (25 Sept) was a raw short-term copied into a
+    'core' because the draft failed. A configured model that fails now
+    proposes nothing, the sleep says why, and the brief is kept."""
+    h = make_hippo(model=lambda prompt: "I think the answer is probably something like memory")
+    short(memory, "a", "t"); short(memory, "b", "t")
+    bid = _brief(memory, ["t"])
+    rep = h.check()["sleep"]
+    assert rep["draft_id"] is None and rep["operations"] == 0, "no mechanical copy"
+    assert rep["error"] and "not the JSON asked for" in rep["error"]
+    assert rep["model_failures"] and rep["model_failures"][0]["stage"] == "draft"
+    assert "draft_failed" in [e["event"] for e in h.state["events"]]
+    assert [b["id"] for b in memory.get("/brief").json()["entries"]] == [bid], "the brief is kept"
+
+
+def test_a_redraft_that_fails_is_reported_not_swallowed(memory, make_hippo):
+    from conftest import review
+    calls = {"n": 0}
+
+    def model(prompt: str) -> str:
+        calls["n"] += 1
+        if "DENIED" in prompt:
+            return "sorry, I was thinking"
+        return as_json({"operations": [{"kind": "new_core", "content": "x", "rationale": "x", "source_indexes": [0, 1]}]})
+    h = make_hippo(model=model)
+    short(memory, "a", "t"); short(memory, "b", "t")
+    _brief(memory, ["t"])
+    did = h.check()["sleep"]["draft_id"]
+    review(memory, did, [{"op": 0, "verdict": "deny", "critique": "no"}])
+    t = h.tend()
+    assert t["resubmitted"] == [] and t["model_failures"] and t["model_failures"][0]["stage"] == "redraft"
+    assert "redraft_failed" in [e["event"] for e in h.state["events"]]
+
+
+def test_thinking_is_switched_off_by_default(memory, make_hippo):
+    """The stand-in server thinks (empty answer) unless the request carries
+    chat_template_kwargs.enable_thinking=false - the same trap as Qwen3.5 on
+    llama.cpp. With the default extra_body the sleep drafts; with it removed
+    the sleep fails loudly."""
+    port = _free_port()
+    h = _managed(make_hippo, port, keep_warm_seconds=0)
+    try:
+        short(memory, "the nuc stays on focal", "nuc"); short(memory, "the nuc hates jammy", "nuc")
+        _brief(memory, ["nuc"])
+        h._cfg.model.extra_body = {}
+        rep = h.check()["sleep"]
+        assert rep["error"] and rep["draft_id"] is None, "thinking on: no usable answer, and it says so"
+        h._cfg.model.extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
+        rep = h.check()["sleep"]
+        assert rep["error"] is None and rep["operations"] >= 1, rep
+    finally:
+        h.model.shutdown()

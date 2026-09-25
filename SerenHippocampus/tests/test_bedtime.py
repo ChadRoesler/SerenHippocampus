@@ -6,7 +6,7 @@ The brief is the gate.
   every brief_check_misses of them the hippocampus asks (a near-term intent in
   Memory, a brief_requested event); asked and waiting, it nudges, no second note
 - one chain at a time: a brief that arrives during a review waits
-- the cull: when the chain lands, tend closes the dockets, consumes the brief,
+- the cull: when the chain lands, tend closes the drafts, consumes the brief,
   completes the review note, emits chain_closed; the next check finds no brief
 - a brief with nothing to draft from is consumed at once
 - brief_pull off: no brief, no draft, ever; on: the small model pulls after
@@ -40,7 +40,7 @@ def test_a_brief_opens_a_sleep_at_any_hour(memory, make_hippo):
     bid = _brief(memory, "I'm off to the forest; the t stuff mattered")
     rep = h.check()
     assert rep["status"] == "sleeping" and rep["brief_id"] == bid
-    assert rep["sleep"]["docket_id"] and rep["sleep"]["brief_id"] == bid and rep["sleep"]["brief_pulled"] is False
+    assert rep["sleep"]["draft_id"] and rep["sleep"]["brief_id"] == bid and rep["sleep"]["brief_pulled"] is False
     assert _notes(memory, "waits for your review"), "the model is poked to review"
 
 
@@ -59,28 +59,28 @@ def test_no_brief_no_draft_and_the_call_comes_after_the_misses(memory, make_hipp
         h.check()
     assert len(_notes(memory, "wants a brief")) == 1, "asked again: a nudge, not a second note"
     assert h.state["events"][-1]["event"] == "brief_requested" and h.state["events"][-1]["nudge"] == 1
-    assert memory.get("/dockets").json()["count"] == 0, "no brief, no draft"
+    assert memory.get("/drafts").json()["count"] == 0, "no brief, no draft"
 
 
-def test_the_cull_closes_dockets_consumes_the_brief_and_completes_the_note(memory, make_hippo):
+def test_the_cull_closes_drafts_consumes_the_brief_and_completes_the_note(memory, make_hippo):
     h = make_hippo()
     short(memory, "a", "t"); short(memory, "b", "t")
     bid = _brief(memory)
     rep = h.check()
-    did = rep["sleep"]["docket_id"]
+    did = rep["sleep"]["draft_id"]
     assert h.check()["status"] == "chain_open", "the brief is still open; the chain is under review"
     assert memory.get("/brief").json()["count"] == 1
     review(memory, did, [{"op": 0, "verdict": "approve"}])
     t = h.tend()
     assert t["closed"] == [did]
-    assert memory.get(f"/dockets/{did}").json()["status"] == "closed"
+    assert memory.get(f"/drafts/{did}").json()["status"] == "closed"
     assert memory.get("/brief").json()["count"] == 0, "consumed: the check will not see it again"
     hist = memory.get("/brief", params={"include_consumed": "true"}).json()["entries"]
-    assert hist[0]["id"] == bid and hist[0]["metadata"]["consumed_by_docket"] == did
+    assert hist[0]["id"] == bid and hist[0]["metadata"]["consumed_by_draft"] == did
     assert _notes(memory, "waits for your review") == [], "the review note is completed"
     kinds = [e["event"] for e in h.state["events"]]
     assert "chain_closed" in kinds and "brief_consumed" in kinds
-    assert memory.get("/dockets", params={"status": "reviewed"}).json()["count"] == 0
+    assert memory.get("/drafts", params={"status": "reviewed"}).json()["count"] == 0
     assert h.check()["status"] in ("not_bedtime", "waiting_for_brief"), "back to checking"
 
 
@@ -91,17 +91,17 @@ def test_a_denied_chain_is_redrafted_then_culled_when_it_lands(memory, make_hipp
     h = make_hippo(model=model, max_attempts=2)
     short(memory, "a", "t"); short(memory, "b", "t")
     bid = _brief(memory)
-    first = h.check()["sleep"]["docket_id"]
+    first = h.check()["sleep"]["draft_id"]
     review(memory, first, [{"op": 0, "verdict": "deny", "critique": "no"}])
     t = h.tend()
-    second = t["resubmitted"][0]["docket_id"]
+    second = t["resubmitted"][0]["draft_id"]
     assert t["closed"] == [], "still open"
     assert h.check()["status"] == "chain_open"
     review(memory, second, [{"op": 0, "verdict": "approve"}])
     t = h.tend()
     assert t["closed"] == [first]
-    assert memory.get(f"/dockets/{first}").json()["status"] == "closed"
-    assert memory.get(f"/dockets/{second}").json()["status"] == "closed"
+    assert memory.get(f"/drafts/{first}").json()["status"] == "closed"
+    assert memory.get(f"/drafts/{second}").json()["status"] == "closed"
     assert memory.get("/brief").json()["count"] == 0
     assert memory.get("/brief", params={"include_consumed": "true"}).json()["entries"][0]["id"] == bid
 
@@ -128,7 +128,7 @@ def test_brief_pull_is_off_by_default_and_on_it_sleeps_after_the_misses(memory, 
     _slept(h, 4000)
     for _ in range(4):
         h.check()
-    assert pulls == [] and memory.get("/dockets").json()["count"] == 0
+    assert pulls == [] and memory.get("/drafts").json()["count"] == 0
     h2 = make_hippo(model=model, interval_seconds=3600, brief_check_misses=2, brief_pull=True)
     _slept(h2, 4000)
     h2.state["brief_misses"] = 0                           # h2 shares h's state file; start its count fresh
@@ -139,7 +139,7 @@ def test_brief_pull_is_off_by_default_and_on_it_sleeps_after_the_misses(memory, 
 
 def test_flagged_memories_are_purged_on_the_tick_without_a_brief(memory, make_hippo):
     h = make_hippo()
-    core = review(memory, memory.post("/dockets", json={"operations": [
+    core = review(memory, memory.post("/drafts", json={"operations": [
         {"kind": "new_core", "content": "the key is ssh-rsa AAAA", "topic": "oops"}]}).json()["id"],
         [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
     h.tend()                                               # culls that hand-made chain
@@ -170,3 +170,27 @@ def test_the_app_ticks_and_reports_the_gate(memory, bridge, hcfg):
         assert tc.post("/check").json()["status"] == "sleeping"
         assert tc.get("/queue").json()["count"] == 1
     client.close()
+
+
+def test_an_older_open_brief_retires_with_the_one_the_sleep_used(memory, make_hippo):
+    """Seen live 25 Sept 2026: two briefs written the same night, the sleep
+    used the newer, the cull consumed only that, and the older would have
+    opened a second sleep under an outdated steer. A brief written after the
+    sleep started is the next sleep's and stays open."""
+    import time as _t
+    h = make_hippo()
+    short(memory, "a", "t"); short(memory, "b", "t")
+    older = _brief(memory, "early in the night")
+    _t.sleep(0.05)
+    newer = _brief(memory, "end of the night")
+    rep = h.check()
+    assert rep["sleep"]["brief_id"] == newer
+    _t.sleep(0.05)
+    later = _brief(memory, "tomorrow's")
+    review(memory, rep["sleep"]["draft_id"], [{"op": 0, "verdict": "approve"}])
+    h.tend()
+    open_ids = [b["id"] for b in memory.get("/brief").json()["entries"]]
+    assert older not in open_ids and newer not in open_ids, "the used brief and the one it superseded are retired"
+    assert open_ids == [later], "a brief written after the sleep started stays for the next one"
+    hist = {b["id"]: b["metadata"] for b in memory.get("/brief", params={"include_consumed": "true"}).json()["entries"]}
+    assert hist[older]["consumed_by_draft"] == f"superseded-by-{newer}"

@@ -12,7 +12,7 @@ how it says what happened.
   before someone has looked. A sleep inside the grace window is a normal one
 - quiet: with nothing free to draft from, no brief is pulled and no model is
   called; the report says so
-- events: a submitted docket, a purge, a failed sleep and an ended chain are
+- events: a submitted draft, a purge, a failed sleep and an ended chain are
   recorded on the service (GET /events) and, with a webhook, POSTed with the
   bearer; a webhook that fails never fails the sleep
 """
@@ -137,7 +137,7 @@ def test_a_sleep_with_nothing_to_draft_from_calls_no_model(memory, make_hippo):
     assert rep["quiet"] is False and calls, "a fragment to draft from wakes the model"
 
 
-def test_short_terms_held_by_a_pending_docket_do_not_break_the_quiet(memory, make_hippo):
+def test_short_terms_held_by_a_pending_draft_do_not_break_the_quiet(memory, make_hippo):
     h = make_hippo()
     short(memory, "a", "t"); short(memory, "b", "t")
     first = h.sleep()
@@ -156,18 +156,18 @@ def test_events_are_kept_and_posted_to_the_webhook_with_the_bearer(memory, make_
         return httpx.Response(204)
     h = make_hippo()
     h._cfg.notify = NotifyConfig(webhook_url="http://lodestar.test/hooks/hippocampus", bearer_token="s3cret",
-                                 events=["docket_submitted", "purged", "sleep_failed", "chain_ended"])
+                                 events=["draft_submitted", "purged", "sleep_failed", "chain_ended"])
     h._notify_transport = httpx.MockTransport(hook)
     short(memory, "a", "t"); short(memory, "b", "t")
     rep = h.sleep()
     kinds = [e["event"] for e in h.state["events"]]
-    assert "docket_submitted" in kinds and "sleep_done" in kinds
+    assert "draft_submitted" in kinds and "sleep_done" in kinds
     sent = [json.loads(r.content) for r in posted]
-    assert [s["event"] for s in sent] == ["catch_up", "docket_submitted"] or [s["event"] for s in sent] == ["docket_submitted"], sent
-    sub = next(s for s in sent if s["event"] == "docket_submitted")
-    assert sub["docket_id"] == rep["docket_id"] and sub["operations"] == 1 and sub["service"] == "seren-hippocampus"
+    assert [s["event"] for s in sent] == ["catch_up", "draft_submitted"] or [s["event"] for s in sent] == ["draft_submitted"], sent
+    sub = next(s for s in sent if s["event"] == "draft_submitted")
+    assert sub["draft_id"] == rep["draft_id"] and sub["operations"] == 1 and sub["service"] == "seren-hippocampus"
     assert posted[-1].headers["authorization"] == "Bearer s3cret"
-    assert all(e.get("delivered") is True for e in h.state["events"] if e["event"] == "docket_submitted")
+    assert all(e.get("delivered") is True for e in h.state["events"] if e["event"] == "draft_submitted")
     assert "sleep_done" not in [s["event"] for s in sent], "only the configured events go out"
 
 
@@ -180,7 +180,7 @@ def test_a_failing_webhook_never_fails_the_sleep(memory, make_hippo):
     short(memory, "a", "t"); short(memory, "b", "t")
     rep = h.sleep()
     assert rep["error"] is None and rep["operations"] == 1
-    ev = next(e for e in h.state["events"] if e["event"] == "docket_submitted")
+    ev = next(e for e in h.state["events"] if e["event"] == "draft_submitted")
     assert ev["delivered"] is False and "nobody home" in ev["delivery_error"]
 
 
@@ -188,7 +188,7 @@ def test_a_purge_a_failure_and_an_ended_chain_are_events(memory, make_hippo):
     def model(prompt: str) -> str:
         return as_json({"content": "again", "rationale": "x"}) if "DENIED" in prompt else             as_json({"operations": [{"kind": "new_core", "content": "x", "rationale": "x", "source_indexes": [0, 1]}]})
     h = make_hippo(model=model, max_attempts=2)
-    core = review(memory, memory.post("/dockets", json={"operations": [
+    core = review(memory, memory.post("/drafts", json={"operations": [
         {"kind": "new_core", "content": "the key is ssh-rsa AAAA", "topic": "oops"}]}).json()["id"],
         [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
     memory.post(f"/long/{core}/forget", json={"reason": "leaked key"})
@@ -198,10 +198,10 @@ def test_a_purge_a_failure_and_an_ended_chain_are_events(memory, make_hippo):
     assert purged["count"] == 1 and purged["ids"] == [core]
     assert "ssh-rsa" not in json.dumps(h.state["events"]), "an event carries ids, never content"
     # deny both permitted attempts: the chain is spent; tend says so once
-    review(memory, rep["docket_id"], [{"op": 0, "verdict": "deny", "critique": "no"}])
-    second = h.tend()["resubmitted"][0]["docket_id"]
+    review(memory, rep["draft_id"], [{"op": 0, "verdict": "deny", "critique": "no"}])
+    second = h.tend()["resubmitted"][0]["draft_id"]
     resub = next(e for e in h.state["events"] if e["event"] == "tend_resubmitted")
-    assert resub["docket_id"] == second and resub["attempt"] == 2 and resub["terminal"] is True
+    assert resub["draft_id"] == second and resub["attempt"] == 2 and resub["terminal"] is True
     review(memory, second, [{"op": 0, "verdict": "deny", "critique": "still no"}])
     h.tend(); h.tend()
     kinds = [e["event"] for e in h.state["events"]]
@@ -234,8 +234,14 @@ def test_the_app_serves_events_and_status_says_what_the_next_sleep_will_be(memor
         tc.post("/sleep")
         ev = tc.get("/events").json()
         assert ev["count"] >= 2 and ev["entries"][0]["event"] == "sleep_done", "newest first"
-        assert any(e["event"] == "docket_submitted" for e in ev["entries"])
+        assert any(e["event"] == "draft_submitted" for e in ev["entries"])
         assert tc.get("/status").json()["catch_up_next"] is False
         page = tc.get("/viewer").text
         assert "events-list" in page and "renderEvents" in page
     client.close()
+
+
+def test_a_notify_list_from_before_the_rename_still_subscribes():
+    """docket_submitted was the event's name until 25 Sept 2026."""
+    from seren_hippocampus.config import NotifyConfig
+    assert NotifyConfig(events=["docket_submitted", "purged"]).events == ["draft_submitted", "purged"]
