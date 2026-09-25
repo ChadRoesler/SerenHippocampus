@@ -32,13 +32,31 @@ model:
   name: default
   timeout_seconds: 120
   max_tokens: 900
+  # Start the model only when a sleep or a redraft needs it, stop it after.
+  # For a Nano floor or a small card: the drafting model is not loaded all day.
+  lifecycle:
+    manage: false
+    # start: "C:\\llama\\llama-server.exe -m C:\\models\\qwen3-1.7b-q4.gguf --port 8090 -ngl 99"
+    # stop: ""                 # blank = stop the process the hippocampus started
+    # observatory_url: http://127.0.0.1:7777      # or: a service the node's Observatory manages
+    # observatory_service: seren-llama
+    # observatory_token_env: SEREN_OBSERVATORY_TOKEN
+    # health_url: ""           # blank = the model url without /v1, plus /health
+    ready_timeout_seconds: 240
+    keep_warm_seconds: 300     # stays up this long after its last call, then stops on the next tick
+    retry_after_seconds: 900   # after a failed start, wait this long before trying again
 
 sleep:
   mode: thread             # thread = loops in-process; external = POST /sleep and /tend yourself
-  interval_seconds: 72000  # ~20h, not 24, on purpose: the window drifts through the day
+  interval_seconds: 72000  # bedtime: ~20h after the last sleep (not 24, on purpose: it drifts through the day)
   # at: "03:30"            # or a wall-clock time (local HH:MM) instead of the interval
   warmup_seconds: 300      # a process that boots overdue sleeps this soon, not a whole interval later
   gap_grace_intervals: 3   # a sleep after a gap this long (x interval) drafts but does not age out or sweep
+  # The brief is the gate. Every tend_interval the hippocampus checks Memory for an open brief and
+  # sleeps on it. Past bedtime (interval_seconds / at) with none, it counts the misses:
+  brief_request: true      # ...and every brief_check_misses of them asks the main model for one
+  brief_check_misses: 3    #    (a near-term intent in Memory + a brief_requested event; a nudge after that)
+  brief_pull: false        # headless (no main model): let the small model pull a brief from the fragments
   tend_interval_seconds: 300
   max_entries_per_run: 500
   promote_min_evidence: 3  # short-terms a topic needs before it is proposed (hints, pins, verbatim override)

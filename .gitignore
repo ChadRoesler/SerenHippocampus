@@ -477,11 +477,7 @@ build/
 # -- VS Code extension build output -----------------------------------------
 # Compiled JS lives in dist/ and is rebuilt by vsce at publish time.
 # Committing it causes spurious diffs and risks shipping stale bundles.
-SerenHippocampusVSCode/seren_hippocampus-vscode/dist/
-SerenHippocampusVSCode/seren_hippocampus-vscode/out/
-SerenHippocampusVSCode/node_modules/
-SerenHippocampusVSCode/seren_hippocampus-vscode/node_modules/
-*.vsix
+
 TestResults/
 runtime-stores.json
 # A real config beside the sample is a local thing (it may hold a token)
