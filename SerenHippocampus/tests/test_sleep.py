@@ -286,6 +286,11 @@ def test_viewer_queue_and_history_serve_the_window(memory, bridge, hcfg):
         assert h["entries"][1]["operations"] == 1 and h["entries"][1]["error"] is None
         st = tc.get("/status").json()
         assert "next_sleep_at" in st and st["next_sleep_at"] is None, "external mode: no timer"
+        # the Audit tab: the chain end to end, and the model that drafted it
+        assert "Audit" in page.text
+        au = tc.get("/audit").json()
+        assert au["chain_count"] == 1 and au["chains"][0]["attempts"][0]["operations"][0]["status"] == "pending"
+        assert au["models"][0]["drafts"] == 1
     client.close()
 
 
@@ -302,6 +307,8 @@ def test_queue_reports_an_unreachable_memory_instead_of_failing(hcfg):
     with TestClient(app) as tc:
         q = tc.get("/queue").json()
         assert q["drafts"] == [] and "refused" in q["error"]
+        au = tc.get("/audit").json()
+        assert au["chains"] == [] and "refused" in au["error"], "the audit says Memory is down, never a 500"
         assert tc.get("/health").json()["memory_reachable"] is False
         r = tc.post("/sleep").json()
         assert r["error"] and "refused" in r["error"], "a sleep against a dead Memory records why it stopped"

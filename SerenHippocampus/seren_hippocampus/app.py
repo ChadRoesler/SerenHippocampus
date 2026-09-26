@@ -18,7 +18,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from seren_meninges.auth import bearer_auth_middleware
 from seren_meninges.updates import updates_payload
 from seren_sinew.request_log import RequestLoggingMiddleware
@@ -164,6 +164,44 @@ def create_app(config: Optional[HippocampusConfig] = None,
         except MemoryError as e:
             return {"count": 0, "drafts": [], "error": str(e)}
         return {"count": len(rows), "drafts": rows}
+
+    @app.get("/audit")
+    async def audit(request: Request, limit: int = 20):
+        """Every sleep's chain end to end - brief, attempts, verdicts,
+        critiques, edits, what landed - and how each model did, read from
+        SerenMemory (the record lives there). For catching drift and for
+        judging a model swap on numbers. Reported, not raised, when Memory
+        does not answer."""
+        mem: MemoryClient = request.app.state.memory
+        try:
+            return await asyncio.to_thread(mem.audit, limit)
+        except MemoryError as e:
+            return {"chains": [], "models": [], "error": str(e)}
+
+    @app.get("/replays")
+    async def replays(request: Request, limit: int = 50):
+        """The drafts that can be replayed: each one's saved model calls."""
+        h: Hippocampus = request.app.state.hippocampus
+        from .replay import list_packets
+        rows = list_packets(h._state_path(), limit)
+        return {"count": len(rows), "entries": rows}
+
+    @app.post("/replay")
+    async def replay(request: Request, body: dict = Body(...)):
+        """Send a draft's saved prompts to a candidate model and put the two
+        side by side: {"draft_id": ..., "url": "http://host:port/v1", "name":
+        optional, "extra_body": optional, "timeout_seconds": optional}. An
+        empty url replays on the configured model. Nothing reaches Memory."""
+        h: Hippocampus = request.app.state.hippocampus
+        draft_id = str((body or {}).get("draft_id") or "")
+        if not draft_id:
+            raise HTTPException(400, "'draft_id' is required")
+        try:
+            return await asyncio.to_thread(
+                h.replay, draft_id, str(body.get("url") or ""), str(body.get("name") or ""),
+                body.get("extra_body"), body.get("timeout_seconds"))
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'\""))
 
     @app.get("/viewer")
     async def viewer():

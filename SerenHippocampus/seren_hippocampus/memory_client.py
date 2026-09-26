@@ -72,6 +72,10 @@ class MemoryClient:
             params["status"] = status
         return list(self._req("GET", "/drafts", params=params).get("entries") or [])
 
+    def audit(self, limit: int = 20) -> dict[str, Any]:
+        """Every chain end to end and the numbers per model (Memory's /audit)."""
+        return dict(self._req("GET", "/audit", params={"limit": limit}) or {})
+
     def draft_chain(self, draft_id: str) -> list[dict[str, Any]]:
         return list(self._req("GET", f"/drafts/{draft_id}/chain").get("attempts") or [])
 
