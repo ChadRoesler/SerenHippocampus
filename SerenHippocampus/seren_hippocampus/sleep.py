@@ -49,8 +49,14 @@ import httpx
 from .config import HippocampusConfig
 from .memory_client import MemoryClient, MemoryError
 from .model_lifecycle import ModelLifecycle, ModelUnavailable
+from . import replay as rp
 
 OP_KINDS = ("new_core", "attach", "supersede", "verbatim")
+
+# Stamped on every draft with the model that wrote it (Memory's /audit groups
+# by it). Bump this when a drafting or redrafting prompt changes, so a change
+# in the numbers can be told apart from a change of model (26 Sept 2026).
+PROMPT_VERSION = "2026-09-26"
 
 
 class Busy(RuntimeError):
@@ -67,6 +73,10 @@ class Hippocampus:
         self._notify_transport = notify_transport
         self.state: dict[str, Any] = self._load_state()
         self._model_failures: list[dict[str, Any]] = []
+        self._served_model = ""          # what the server said it runs, from its last answer
+        # While drafting, every model call is kept here and saved as the
+        # draft's replay packet (see seren_hippocampus.replay). None = off.
+        self._capture: Optional[list[dict[str, Any]]] = None
         self.model = ModelLifecycle(cfg.model, log=self._log, emit=self._emit,
                                     log_dir=self._state_path().parent)
 
@@ -165,23 +175,47 @@ class Hippocampus:
         # Up when needed (started if lifecycle.manage is on), ModelUnavailable
         # otherwise - which the sleep turns into a failure that keeps the brief.
         self.model.ensure_up()
-        url = m.url.rstrip("/") + "/chat/completions"
-        payload = {"model": m.name, "messages": [{"role": "user", "content": prompt}],
-                   "max_tokens": max_tokens or m.max_tokens, "temperature": 0.2}
-        for k, v in (m.extra_body or {}).items():
-            payload.setdefault(k, v)
         try:
-            with httpx.Client(timeout=m.timeout_seconds) as c:
-                r = c.post(url, json=payload)
-                r.raise_for_status()
-                return r.json()["choices"][0]["message"]["content"] or ""
-        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
-            raise ModelUnavailable(f"the model at {m.url} stopped answering: {e}") from e
-        except httpx.TimeoutException as e:
-            raise RuntimeError(f"the model took longer than model.timeout_seconds ({m.timeout_seconds}s) "
-                               f"to answer - a slow model, or one spending its tokens thinking") from e
+            text, served = self._call_at(m.url, m.name, prompt, max_tokens or m.max_tokens,
+                                         m.extra_body, m.timeout_seconds)
+            # llama-server (and most OpenAI-compatible servers) name the model
+            # they actually ran - the gguf file, not the config's alias. That
+            # is what the audit needs to tell two models apart.
+            self._served_model = served or self._served_model
+            return text
         finally:
             self.model.release()
+
+    @staticmethod
+    def _call_at(url: str, name: str, prompt: str, max_tokens: int, extra_body: Optional[dict],
+                 timeout: int) -> tuple[str, str]:
+        """One chat call to any OpenAI-compatible server: (answer, the model
+        the server says it ran). The drafting path and a replay share it."""
+        payload = {"model": name, "messages": [{"role": "user", "content": prompt}],
+                   "max_tokens": max_tokens, "temperature": 0.2}
+        for k, v in (extra_body or {}).items():
+            payload.setdefault(k, v)
+        try:
+            with httpx.Client(timeout=timeout) as c:
+                r = c.post(url.rstrip("/") + "/chat/completions", json=payload)
+                r.raise_for_status()
+                body = r.json()
+                return body["choices"][0]["message"]["content"] or "", str(body.get("model") or "")
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise ModelUnavailable(f"the model at {url} stopped answering: {e}") from e
+        except httpx.TimeoutException as e:
+            raise RuntimeError(f"the model took longer than {timeout}s to answer - a slow model, "
+                               f"or one spending its tokens thinking") from e
+
+    def _stamp(self) -> dict[str, Any]:
+        """Which model wrote this draft, flat so Memory keeps it as-is: the
+        audit's numbers group by it, and a swap is only visible if every draft
+        says who wrote it."""
+        if not self.model_configured:
+            return {"model_mode": "mechanical", "model_prompt": PROMPT_VERSION}
+        return {"model_mode": "model", "model_name": self._cfg.model.name,
+                "model_served": self._served_model, "model_url": self._cfg.model.url,
+                "model_prompt": PROMPT_VERSION}
 
     @staticmethod
     def _json_from(text: str) -> Optional[Any]:
@@ -436,14 +470,17 @@ class Hippocampus:
             report["clusters"] = len(clusters)
 
             ops: list[dict[str, Any]] = []
+            self._capture = []
             for topic, entries in clusters.items():
                 ops += self._propose(topic, entries, promote_hints, noise_hints, brief)
             report["operations"] = len(ops)
             if ops:
                 summary = self._summarise(ops)
                 out = self._mem.submit_draft({"summary": summary, "operations": ops,
-                                               "brief_id_used": report["brief_id"], "attempt": 1})
+                                               "brief_id_used": report["brief_id"], "attempt": 1,
+                                               "extra": self._stamp()})
                 report["draft_id"] = out.get("id")
+                self._save_replay(out.get("id"), attempt=1, brief_id=report["brief_id"])
                 self._log(f"submitted draft {out.get('id')} with {len(ops)} operation(s)")
                 # Poke the model: a note in Memory that names the draft, closed
                 # when the chain lands. The event goes out for the webhook.
@@ -723,18 +760,37 @@ class Hippocampus:
             "fragments alone cannot."
             f"{steer_block}\n\n"
             f"Topic: {topic or 'untagged'}\n\nFragments:\n{frag_lines}\n\nExisting cores:\n{core_lines}\n\nJSON:")
+        call: dict[str, Any] = {"stage": "draft", "topic": topic, "prompt": prompt,
+                                "entries": [{"id": e["id"], "content": e.get("content") or ""} for e in entries],
+                                "candidates": candidates}
+        if self._capture is not None:
+            self._capture.append(call)
+        t0 = time.time()
         try:
             raw = self._call_model(prompt)
         except ModelUnavailable:
             raise                                          # the sleep fails and keeps its brief
         except Exception as e:  # noqa: BLE001
+            call.update(error=str(e), seconds=round(time.time() - t0, 2), ops=[])
             self._model_failure("draft", topic, str(e))
             return []
-        parsed = self._json_from(raw)
-        if not isinstance(parsed, dict):
+        call.update(answer=raw, seconds=round(time.time() - t0, 2))
+        ops = self._parse_draft(raw, topic, entries, candidates)
+        call["ops"] = ops or []
+        if ops is None:
+            call["error"] = "not the JSON asked for"
             self._model_failure("draft", topic, "the model's answer was not the JSON asked for: "
                                 + repr((raw or "")[:160]))
             return []
+        return ops
+
+    def _parse_draft(self, raw: str, topic: Optional[str], entries: list[dict[str, Any]],
+                     candidates: list[dict[str, Any]]) -> Optional[list[dict[str, Any]]]:
+        """A drafting answer, parsed and validated: None when it is not the
+        JSON asked for. The sleep and a replay both come through here."""
+        parsed = self._json_from(raw)
+        if not isinstance(parsed, dict):
+            return None
         return self._validate_ops(parsed.get("operations"), topic, entries, candidates)
 
     def _validate_ops(self, raw_ops: Any, topic: Optional[str], entries: list[dict[str, Any]],
@@ -813,8 +869,10 @@ class Hippocampus:
                     self._close_chain(d, chain)
                     report["closed"].append(cluster_id)
                     continue
+                self._capture = []
                 new_ops = self._redraft(denied)
                 if not new_ops:
+                    self._capture = None
                     continue
                 attempt = int(d.get("attempt", 1)) + 1
                 out = self._mem.submit_draft({
@@ -823,7 +881,10 @@ class Hippocampus:
                     "terminal": attempt >= self._cfg.sleep.max_attempts,
                     "previous_draft_ids": list(d.get("previous_draft_ids") or []) + [d["id"]],
                     "brief_id_used": d.get("brief_id_used"),
+                    "extra": self._stamp(),
                 })
+                self._save_replay(out.get("id"), attempt=attempt, brief_id=d.get("brief_id_used"),
+                                  redraft_of=d["id"])
                 report["resubmitted"].append({"draft_id": out.get("id"), "cluster_id": cluster_id,
                                               "attempt": attempt, "operations": len(new_ops)})
                 self._log(f"resubmitted {len(new_ops)} operation(s) for {cluster_id} as attempt {attempt}")
@@ -860,26 +921,109 @@ class Hippocampus:
                 f"Operation kind: {op.get('kind')}\nTopic: {op.get('topic') or 'untagged'}\n"
                 f"Source fragments:\n{frag_lines}\n\nPrevious content: {op.get('content')}\n"
                 f"Critique: {op.get('critique')}\n\nJSON:")
+            denied_op = {k: op.get(k) for k in ("index", "kind", "topic", "target_core_id", "content", "critique")}
+            call: dict[str, Any] = {"stage": "redraft", "topic": op.get("topic"), "prompt": prompt,
+                                    "entries": [{"id": s["id"], "content": s.get("content") or ""} for s in src],
+                                    "denied": denied_op}
+            if self._capture is not None:
+                self._capture.append(call)
+            t0 = time.time()
             try:
                 raw = self._call_model(prompt)
             except ModelUnavailable:
                 raise                                      # tend records it; the chain waits for the model
             except Exception as e:  # noqa: BLE001
+                call.update(error=str(e), seconds=round(time.time() - t0, 2), ops=[])
                 self._model_failure("redraft", op.get("topic"), str(e))
                 continue
-            parsed = self._json_from(raw)
-            if not isinstance(parsed, dict):
+            call.update(answer=raw, seconds=round(time.time() - t0, 2))
+            new = self._parse_redraft(raw, denied_op, call["entries"])
+            call["ops"] = [new] if new else []
+            if new is None and not isinstance(self._json_from(raw), dict):
+                call["error"] = "not the JSON asked for"
                 self._model_failure("redraft", op.get("topic"), "the model's answer was not the JSON asked for: "
                                     + repr((raw or "")[:160]))
                 continue
-            content = str(parsed.get("content") or "").strip()
-            if op.get("kind") != "attach" and not content:
-                continue
-            new = {"kind": op.get("kind"), "content": content, "topic": op.get("topic"),
-                   "target_core_id": op.get("target_core_id"),
-                   "source_short_ids": [s["id"] for s in src], "evidence_count": len(src),
-                   "rationale": (str(parsed.get("rationale") or "")[:500] or None)}
-            if op.get("kind") == "attach" and parsed.get("restated_content"):
-                new["restated_content"] = str(parsed["restated_content"]).strip()
-            out.append(new)
+            if new:
+                out.append(new)
         return out
+
+    def _parse_redraft(self, raw: str, op: dict[str, Any], src: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        """A redraft answer turned into the operation that replaces the
+        denied one; None when there is nothing usable. Shared with a replay."""
+        parsed = self._json_from(raw)
+        if not isinstance(parsed, dict):
+            return None
+        content = str(parsed.get("content") or "").strip()
+        if op.get("kind") != "attach" and not content:
+            return None
+        new = {"kind": op.get("kind"), "content": content, "topic": op.get("topic"),
+               "target_core_id": op.get("target_core_id"),
+               "source_short_ids": [s["id"] for s in src], "evidence_count": len(src),
+               "rationale": (str(parsed.get("rationale") or "")[:500] or None)}
+        if op.get("kind") == "attach" and parsed.get("restated_content"):
+            new["restated_content"] = str(parsed["restated_content"]).strip()
+        return new
+
+    # ── replay ────────────────────────────────────────────────────────────
+    def _save_replay(self, draft_id: Optional[str], **fields: Any) -> None:
+        calls, self._capture = self._capture, None
+        if draft_id and calls:
+            rp.save_packet(self._state_path(), draft_id, {"created_at": time.time(), "stamp": self._stamp(),
+                                                          "calls": calls, **fields})
+
+    def replay(self, draft_id: str, url: str = "", name: str = "", extra_body: Optional[dict] = None,
+               timeout_seconds: Optional[int] = None) -> dict[str, Any]:
+        """The same prompts a draft was built from, sent to a candidate model
+        (url; empty = the configured one), parsed and validated exactly as a
+        sleep would. Nothing is submitted to Memory. See replay.py."""
+        pk = rp.load_packet(self._state_path(), draft_id)
+        if pk is None:
+            raise KeyError(f"no replay packet for draft '{draft_id}' - drafts from before replays, or pruned")
+        m = self._cfg.model
+        url = url.strip() or m.url
+        eb = m.extra_body if extra_body is None else extra_body
+        timeout = int(timeout_seconds or m.timeout_seconds)
+        cand_calls: list[dict[str, Any]] = []
+        served = ""
+        for c in pk.get("calls") or []:
+            out: dict[str, Any] = {"stage": c.get("stage"), "topic": c.get("topic"),
+                                   "entries": c.get("entries"), "candidates": c.get("candidates")}
+            t0 = time.time()
+            try:
+                if url == m.url and not url.startswith("replay-test:"):
+                    raw = self._call_model(c["prompt"])
+                    got = self._served_model
+                else:
+                    raw, got = self._call_at(url, name or m.name, c["prompt"], m.max_tokens, eb, timeout)
+                served = got or served
+                out["answer"] = raw
+                if c.get("stage") == "redraft":
+                    new = self._parse_redraft(raw, c.get("denied") or {}, c.get("entries") or [])
+                    out["ops"] = [new] if new else []
+                else:
+                    ops = self._parse_draft(raw, c.get("topic"), c.get("entries") or [], c.get("candidates") or [])
+                    out["ops"] = ops or []
+                    if ops is None:
+                        out["error"] = "not the JSON asked for"
+            except Exception as e:  # noqa: BLE001 - a candidate that fails is a result, not a crash
+                out.update(ops=[], error=f"{type(e).__name__}: {e}")
+            out["seconds"] = round(time.time() - t0, 2)
+            cand_calls.append(out)
+        # what the original got from the reviewer, and what finally landed
+        try:
+            chain = self._mem.draft_chain(draft_id)
+            original = next((d for d in chain if d.get("id") == draft_id), None)
+        except Exception:  # noqa: BLE001
+            chain, original = [], None
+        landed = rp.landed_texts(chain)
+        orig_calls = pk.get("calls") or []
+        return {
+            "draft_id": draft_id, "attempt": pk.get("attempt"), "created_at": pk.get("created_at"),
+            "landed": landed,
+            "original": {"model": pk.get("stamp"), "calls": orig_calls,
+                         "reviewed_ops": (original or {}).get("operations") or [],
+                         "checks": rp.check_side(orig_calls, landed)},
+            "candidate": {"url": url, "served": served, "calls": cand_calls,
+                          "checks": rp.check_side(cand_calls, landed)},
+        }

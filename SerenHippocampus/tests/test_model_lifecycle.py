@@ -248,3 +248,32 @@ def test_thinking_is_switched_off_by_default(memory, make_hippo):
         assert rep["error"] is None and rep["operations"] >= 1, rep
     finally:
         h.model.shutdown()
+
+
+def test_every_draft_says_which_model_wrote_it(memory, make_hippo):
+    """Design note: validate swapping consolidators and catch drift. The
+    audit can only do that if each draft is stamped with the model that wrote
+    it - the name the SERVER gives (the gguf), not only the config's alias -
+    and the prompt version. A redraft is stamped too; so is a sleep with no
+    model (mechanical)."""
+    from conftest import review
+    from seren_hippocampus.sleep import PROMPT_VERSION
+    port = _free_port()
+    h = _managed(make_hippo, port, keep_warm_seconds=0)
+    try:
+        short(memory, "the nuc stays on focal", "nuc"); short(memory, "the nuc hates jammy", "nuc")
+        _brief(memory, ["nuc"])
+        did = h.check()["sleep"]["draft_id"]
+        d = memory.get(f"/drafts/{did}").json()
+        assert d["extra"]["model_served"] == "fake-2b-Q4_K_M.gguf", d["extra"]
+        assert d["extra"]["model_prompt"] == PROMPT_VERSION and d["extra"]["model_mode"] == "model"
+        review(memory, did, [{"op": 0, "verdict": "deny", "critique": "DENIED: say it plainly"}])
+        again = h.tend()["resubmitted"][0]["draft_id"]
+        assert memory.get(f"/drafts/{again}").json()["extra"]["model_served"] == "fake-2b-Q4_K_M.gguf"
+        audit = memory.get("/audit").json()
+        assert audit["models"][0]["model"] == f"fake-2b-Q4_K_M.gguf · prompt {PROMPT_VERSION}"
+        assert audit["models"][0]["drafts"] == 2
+    finally:
+        h.model.shutdown()
+    h._cfg.model.url = ""
+    assert h._stamp() == {"model_mode": "mechanical", "model_prompt": PROMPT_VERSION}

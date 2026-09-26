@@ -9,6 +9,7 @@ canned JSON keyed on what the prompt asks for.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Callable
 
@@ -61,7 +62,10 @@ class BagOfWords(EmbeddingFunction):
         for text in input:
             vec = [0.0] * self._DIM
             for tok in text.lower().split():
-                vec[hash(tok) % self._DIM] += 1.0
+                # hashlib, not hash(): Python salts str hashes per process, so the
+                # same text landed in different buckets run to run and a test that
+                # needs one core to be the nearest passed or failed by the salt.
+                vec[int(hashlib.md5(tok.encode()).hexdigest(), 16) % self._DIM] += 1.0
             mag = sum(v * v for v in vec) ** 0.5 or 1.0
             out.append([v / mag for v in vec])
         return out

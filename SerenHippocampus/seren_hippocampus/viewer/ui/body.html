@@ -26,6 +26,22 @@
     <div id="queue-list"></div>
 </section>
 
+<section class="view" id="audit">
+    <p class="hint">How the drafting is going, per model, and every sleep end to end: the brief that opened it, each attempt, what the reviewer said, and what landed. Use it to catch the small model drifting, and to judge a model swap on numbers instead of a feeling.</p>
+    <div id="audit-models"></div>
+    <h3 class="sub">Replay a draft on another model</h3>
+    <p class="hint">Sends the exact prompts a draft was built from to a candidate model and shows both side by side, with the verdicts the original got and what finally landed. Nothing is submitted to Memory. Start the candidate's server first (on its own port), then give its address.</p>
+    <div class="entry replay-form">
+        <select id="replay-draft"></select>
+        <input id="replay-url" placeholder="candidate model, e.g. http://127.0.0.1:7201/v1 (blank = the configured model)">
+        <button class="btn" id="btn-replay" onclick="runReplay()">Replay</button>
+        <span class="hint" id="replay-status"></span>
+    </div>
+    <div id="replay-result"></div>
+    <h3 class="sub">Chains</h3>
+    <div id="audit-chains"></div>
+</section>
+
 <section class="view" id="history">
     <p class="hint">The last sleeps and tends this service ran, newest first, with what each one did or why it stopped.</p>
     <div id="history-list"></div>

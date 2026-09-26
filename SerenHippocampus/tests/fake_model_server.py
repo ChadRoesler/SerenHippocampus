@@ -40,7 +40,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             content = json.dumps({"operations": [{"kind": "new_core", "content": "The NUC stays on focal.",
                                                   "rationale": "drafted by the model", "source_indexes": [0, 1]}]})
-        self._send(200, {"choices": [{"message": {"content": content}}]})
+        # the gguf it "runs", named in every answer the way llama-server does
+        self._send(200, {"model": "fake-2b-Q4_K_M.gguf", "choices": [{"message": {"content": content}}]})
 
 
 if __name__ == "__main__":

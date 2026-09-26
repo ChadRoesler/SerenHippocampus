@@ -36,5 +36,17 @@
 .op:first-of-type { border-top: 0; }
 .op .critique { font-size: 13px; opacity: .85; margin-top: 4px; }
 .op .critique b { color: #e06c75; }
+/* the audit: a table of models, then each chain folded until opened */
+table.audit { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.audit th, table.audit td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+table.audit th { font-weight: 600; opacity: .8; cursor: help; }
+table.audit td:not(:first-child) { font-variant-numeric: tabular-nums; }
+details.entry > summary { cursor: pointer; list-style: none; }
+details.entry > summary::-webkit-details-marker { display: none; }
+.attempt { border-left: 2px solid var(--border); margin: 8px 0 0 4px; padding-left: 10px; }
+.replay-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.replay-form select, .replay-form input { flex: 1 1 260px; min-width: 0; padding: 6px 8px; background: transparent;
+    color: inherit; border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+.replay-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
 code.id { font-size: 11px; opacity: .6; }
 .empty { opacity: .7; padding: 18px 0; }
