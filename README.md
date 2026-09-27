@@ -149,7 +149,7 @@ judgement, and a threshold is not one.
 ## Install and run
 
 ```bash
-pip install seren-hippocampus            # + [mcp] later, + [corp] behind a TLS-intercepting proxy
+pip install seren-hippocampus            # + [mcp] for the tools below, + [corp] behind a TLS-intercepting proxy
 cp seren-hippocampus.yaml.sample ~/seren-hippocampus/seren-hippocampus.yaml
 python -m seren_hippocampus --config ~/seren-hippocampus/seren-hippocampus.yaml
 ```
@@ -176,6 +176,35 @@ Seren service.
 | `GET /history` | the last runs, newest first                           |
 | `GET /events`  | what happened, newest first, and whether it was sent  |
 | `GET /viewer`  | the window (below)                                    |
+| `/mcp`         | the MCP tools (below), with the `[mcp]` extra         |
+
+## The tools, for the main model
+
+The reviewer is a model in a session, and a session does not reach the
+viewer. It could always see the drafts and write the brief - those are
+Memory's tools, because the record lives there - but not the sleep itself:
+did last night's run fail, is a chain still open, when is bedtime, is the
+model even up. With `pip install seren-hippocampus[mcp]` (Starwright:
+`--mcp` / `-Mcp`) the same process serves an MCP endpoint at `/mcp`, behind
+the same bearer as every other route:
+
+| tool            | what                                                                    |
+|-----------------|-------------------------------------------------------------------------|
+| `sleep_status`  | where it stands in one call: last sleep and tend, bedtime, a brief waiting, a chain open, drafts to review, the model up or down - and a sentence saying so |
+| `sleep_now`     | sleep now on the open brief. The loop sleeps by itself when a brief is open; this is for not waiting for the tick |
+| `tend_now`      | redraft what was just denied, cull chains that landed, now instead of next tick |
+| `check_now`     | one tick by hand: purge, then sleep only if the gate is really open      |
+| `sleep_history` | the last runs, newest first                                             |
+| `audit_sleeps`  | per-model numbers and the last few chains - verdicts and critiques, not the wording (that is Memory's `audit_drafts`) |
+| `list_replays`  | which drafts kept their prompts                                         |
+| `replay_draft`  | one draft's prompts on a candidate model, side by side; nothing reaches Memory |
+
+A sleep or tend already running comes back as `busy`, and a Memory that
+does not answer as a message - not an exception, and not a failed sleep on
+the record. The tools call the same Hippocampus the routes do, off the event
+loop, so a sleep started from a session holds the same lock as one the loop
+started. `SEREN_HIPPOCAMPUS_MCP_MOUNT` moves the endpoint;
+`SEREN_HIPPOCAMPUS_MCP_ALLOWED_HOSTS` turns the SDK's host check back on.
 
 ## Saying what happened
 

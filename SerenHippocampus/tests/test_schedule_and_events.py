@@ -92,6 +92,10 @@ def test_a_sleep_after_a_long_gap_is_a_catch_up_that_ages_nothing_out(memory, ma
     rep = h.sleep()
     assert rep["catch_up"] is True and rep["error"] is None
     assert rep["operations"] == 1, "it still drafts"
+    assert rep["tidy"] == {"deferred": "until the chain lands"}
+    _slept(h, 0)                                           # the chain lands later, in a normal stretch
+    review(memory, rep["draft_id"], [{"op": 0, "verdict": "approve"}])
+    h.tend()
     final = calls[-1]
     assert final["age_out"] is False and final["sweep"] is False and final["near"] is True, \
         "a catch-up never ages out or sweeps: nothing is trashed before someone has looked"
@@ -142,7 +146,8 @@ def test_short_terms_held_by_a_pending_draft_do_not_break_the_quiet(memory, make
     short(memory, "a", "t"); short(memory, "b", "t")
     first = h.sleep()
     assert first["operations"] == 1 and first["quiet"] is False
-    again = h.sleep()                                       # the same shorts, now held under review
+    assert h.sleep()["refused"], "one cycle at a time: a sleep by hand waits for the chain"
+    again = h._sleep(brief=None)                            # the guard behind it: held shorts are not redrafted
     assert again["quiet"] is True and again["operations"] == 0
 
 

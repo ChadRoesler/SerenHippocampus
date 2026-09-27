@@ -48,8 +48,10 @@ def test_mechanical_sleep_proposes_cores_verbatim_and_respects_the_threshold(mem
     assert kinds["verbatim"]["source_short_ids"] == [v]
     assert "mechanical" in kinds["new_core"]["rationale"]
 
-    # a second sleep leaves the held short-terms alone
-    rep2 = h.sleep()
+    # a second sleep by hand refuses while the draft is under review; the
+    # guard behind that still leaves held short-terms alone
+    assert h.sleep()["status"] == "chain_open"
+    rep2 = h._sleep(brief=None)
     assert rep2["operations"] == 0 and rep2["held_back"] == 3
     assert memory.get("/drafts", params={"status": "pending"}).json()["count"] == 1
 

@@ -6,16 +6,21 @@ The service: a small FastAPI around the sleep.
     GET  /status      last sleep, last tend, mode, intervals
     POST /sleep       run a sleep now (409 if one is running)
     POST /tend        pick up denied operations now
+    /mcp              MCP server, ONLY when the [mcp] extra is installed
 
 Bearer + request logging come from the family (Meninges, Sinew). In
 sleep.mode=thread the two loops run here; in external, something else
 POSTs on a schedule.
+
+The /mcp tools are the main model's view of the sleep from a session (see
+seren_hippocampus.mcp.tools). They call the same Hippocampus these routes do,
+and sit behind the same bearer: the middleware wraps the mount.
 """
 from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Optional
 
 from fastapi import Body, FastAPI, HTTPException, Request
@@ -71,17 +76,43 @@ def create_app(config: Optional[HippocampusConfig] = None,
                         print(f"[seren-hippocampus] tick error: {e}")
 
             tasks.append(asyncio.create_task(tick_loop()))
+
+        # -- Optional MCP server --
+        # Mounted ONLY if the [mcp] extra is installed; a missing package falls
+        # back to pure-HTTP mode without crashing. Mounted after the Hippocampus
+        # and next_at exist: the tools hold references to both.
         try:
-            yield
-        finally:
-            for t in tasks:
-                t.cancel()
+            from .mcp.server import mount_mcp_routes
+            mcp_server = mount_mcp_routes(app)
+        except ImportError as exc:
+            mcp_server = None
+            print(f"[seren-hippocampus] MCP extras not installed; HTTP-only mode ({exc})")
+        except Exception as exc:  # noqa: BLE001
+            mcp_server = None
+            print(f"[seren-hippocampus] MCP mount failed: {exc!r} - continuing without MCP")
+
+        # -- Run the MCP session manager's task group (Bug 2 fix) --
+        # The streamable-HTTP transport keeps its anyio task group alive in
+        # session_manager.run(); a mounted sub-app's own lifespan does NOT fire
+        # under Starlette, so it has to be entered here or every MCP request
+        # 500s with "Task group is not initialized". AsyncExitStack makes
+        # HTTP-only mode a clean no-op.
+        async with AsyncExitStack() as _mcp_stack:
+            session_manager = getattr(mcp_server, "session_manager", None)
+            if session_manager is not None:
+                await _mcp_stack.enter_async_context(session_manager.run())
+                print("[seren-hippocampus] MCP session manager running")
             try:
-                app.state.hippocampus.model.shutdown()
-            except Exception as e:  # noqa: BLE001
-                print(f"[seren-hippocampus] model shutdown: {e}")
-            if memory_client is None:
-                mem.close()
+                yield
+            finally:
+                for t in tasks:
+                    t.cancel()
+                try:
+                    app.state.hippocampus.model.shutdown()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[seren-hippocampus] model shutdown: {e}")
+                if memory_client is None:
+                    mem.close()
 
     app = FastAPI(title="SerenHippocampus", version=__version__, lifespan=lifespan,
                   description="The sleep cycle for SerenMemory: drafts what should be kept, resubmits on critique, purges what was flagged.")

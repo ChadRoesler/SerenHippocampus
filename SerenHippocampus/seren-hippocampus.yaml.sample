@@ -8,7 +8,10 @@
 server:
   host: 127.0.0.1        # local-only. 0.0.0.0 = reachable on the LAN - set a bearer first
   port: 7424             # the last slot in the brain band
-  # The bearer THIS service requires of callers (its /sleep, /tend, /status).
+  # The bearer THIS service requires of callers (its /sleep, /tend, /status,
+  # and /mcp - the main model's tools, served when the [mcp] extra is
+  # installed: sleep_status, sleep_now, tend_now, check_now, sleep_history,
+  # audit_sleeps, list_replays, replay_draft. SEREN_HIPPOCAMPUS_MCP_MOUNT moves it).
   # bearer_token: ""                                # inline literal - escape hatch
   # bearer_token_env: SEREN_HIPPOCAMPUS_TOKEN       # NAME of an env var (recommended)
   # bearer_token_keyring: "seren-hippocampus/bearer"
