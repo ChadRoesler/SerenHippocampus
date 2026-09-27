@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "seren-hippocampus"
 dynamic = ["version"]
 description = "The sleep cycle for SerenMemory: drafts the docket, resubmits on critique, purges what was flagged. The consolidator, split out."
-license = "GPL-3.0-only"
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.10"
 authors = [{ name = "Chad Roesler" }]
 readme = "README.md"
