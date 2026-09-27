@@ -424,9 +424,12 @@ class Hippocampus:
         req["resolved_at"] = time.time()
         if req.get("intent_id"):
             try:
-                self._mem.complete_near(str(req["intent_id"]))
+                # Retired, not completed: Memory turns a completed intent into a
+                # long-term 'Completed intent: ...' record at the next tidy, and
+                # a poke from this service is not a memory. See _retire_note.
+                self._mem.delete_near(str(req["intent_id"]))
             except Exception as e:  # noqa: BLE001
-                self._log(f"could not complete the brief intent: {e}")
+                self._log(f"could not retire the brief request: {e}")
 
     # ── sleep ─────────────────────────────────────────────────────────────
     def _sleep(self, brief: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -593,9 +596,14 @@ class Hippocampus:
         note_id = notes.pop(str(cluster_id), None)
         if note_id:
             try:
-                self._mem.complete_near(str(note_id))
+                # The review note is this service's poke, not something the
+                # person meant to do: completing it made Memory's tidy file
+                # 'Completed intent: A draft with N operation(s) waits for your
+                # review...' in long-term, one per chain (seen live 27 Sept
+                # 2026). Deleting an open loop is the sanctioned way to drop one.
+                self._mem.delete_near(str(note_id))
             except Exception as e:  # noqa: BLE001
-                self._log(f"could not complete the review note: {e}")
+                self._log(f"could not retire the review note: {e}")
         self.state["review_notes"] = notes
         self.state["brief_misses"] = 0
         pending = dict(self.state.get("chain_catch_up") or {})
@@ -914,9 +922,22 @@ class Hippocampus:
                     report["closed"].append(cluster_id)
                     continue
                 self._capture = []
+                failures = len(self._model_failures)
                 new_ops = self._redraft(denied)
                 if not new_ops:
                     self._capture = None
+                    if len(self._model_failures) > failures:
+                        continue                               # the model failed: the next tend tries again
+                    # Nothing to resubmit and nothing failed: the chain can never
+                    # move again. Left open it would hold every later sleep off
+                    # (one cycle at a time) and its age-out forever. End it.
+                    self._log(f"chain {cluster_id}: the redraft produced nothing; ending the chain")
+                    report["ended"].append(cluster_id)
+                    if cluster_id not in (self.state.get("ended_chains") or []):
+                        self.state["ended_chains"] = (self.state.get("ended_chains") or [])[-200:] + [cluster_id]
+                        self._emit("chain_ended", cluster_id=cluster_id, draft_id=d["id"], why="nothing to redraft")
+                    report["tidy"][cluster_id] = self._close_chain(d, chain)
+                    report["closed"].append(cluster_id)
                     continue
                 attempt = int(d.get("attempt", 1)) + 1
                 out = self._mem.submit_draft({
@@ -954,10 +975,18 @@ class Hippocampus:
         out: list[dict[str, Any]] = []
         for op in denied:
             src = [shorts[i] for i in (op.get("source_short_ids") or []) if i in shorts]
-            if not src:
-                self._log(f"operation {op.get('index')}: its short-terms are gone; nothing to redraft from")
-                continue
-            frag_lines = "\n".join(f"- {(s.get('content') or '')[:400]}" for s in src)
+            # Approving an operation promotes its short-terms (Memory archives
+            # them), and siblings often share them: approve op 4 and the denied
+            # op 3 beside it loses its fragments. Seen live 27 Sept 2026 - the
+            # redraft dropped op 3, and a chain whose every denied op was
+            # orphaned could never be resubmitted OR closed. The critique and
+            # the previous content are what a redraft works from; the fragments
+            # were context. Redraft without them; the op keeps its source ids.
+            if src:
+                frag_lines = "\n".join(f"- {(s.get('content') or '')[:400]}" for s in src)
+            else:
+                frag_lines = ("- (none left: an approved operation in this draft already promoted them; "
+                              "work from the previous content and the critique)")
             prompt = (
                 "You are a memory consolidator's drafting worker. A proposed operation on long-term "
                 "memory was DENIED by the reviewer. Write an improved version that addresses the critique. "
@@ -988,6 +1017,9 @@ class Hippocampus:
                 self._model_failure("redraft", op.get("topic"), "the model's answer was not the JSON asked for: "
                                     + repr((raw or "")[:160]))
                 continue
+            if new and not src:
+                new["source_short_ids"] = list(op.get("source_short_ids") or [])
+                new["evidence_count"] = max(1, len(new["source_short_ids"]))
             if new:
                 out.append(new)
         return out

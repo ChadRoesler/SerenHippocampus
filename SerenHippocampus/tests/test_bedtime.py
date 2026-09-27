@@ -62,7 +62,7 @@ def test_no_brief_no_draft_and_the_call_comes_after_the_misses(memory, make_hipp
     assert memory.get("/drafts").json()["count"] == 0, "no brief, no draft"
 
 
-def test_the_cull_closes_drafts_consumes_the_brief_and_completes_the_note(memory, make_hippo):
+def test_the_cull_closes_drafts_consumes_the_brief_and_retires_the_note(memory, make_hippo):
     h = make_hippo()
     short(memory, "a", "t"); short(memory, "b", "t")
     bid = _brief(memory)
@@ -77,7 +77,9 @@ def test_the_cull_closes_drafts_consumes_the_brief_and_completes_the_note(memory
     assert memory.get("/brief").json()["count"] == 0, "consumed: the check will not see it again"
     hist = memory.get("/brief", params={"include_consumed": "true"}).json()["entries"]
     assert hist[0]["id"] == bid and hist[0]["metadata"]["consumed_by_draft"] == did
-    assert _notes(memory, "waits for your review") == [], "the review note is completed"
+    assert _notes(memory, "waits for your review") == [], "the review note is retired"
+    assert "waits for your review" not in memory.get("/long").text, (
+        "the poke is not filed in long-term as a completed intent (the tidy ran at the close)")
     kinds = [e["event"] for e in h.state["events"]]
     assert "chain_closed" in kinds and "brief_consumed" in kinds
     assert memory.get("/drafts", params={"status": "reviewed"}).json()["count"] == 0
@@ -241,6 +243,63 @@ def test_a_sleep_by_hand_waits_for_the_open_chain(memory, make_hippo):
     review(memory, did, [{"op": 0, "verdict": "approve"}])
     h.tend()                                           # the chain lands and closes
     assert not h.sleep().get("refused"), "once it has landed, a sleep by hand runs"
+
+
+def test_a_denied_op_whose_shorts_a_sibling_promoted_is_still_redrafted(memory, make_hippo):
+    """Seen live 27 Sept 2026: ops 3 and 4 shared a short-term; approving op 4
+    promoted it, and the redraft silently dropped the denied op 3 - the
+    correction the critique asked for was lost. It is redrafted from the
+    previous content and the critique, and keeps its source ids."""
+    prompts: list[str] = []
+
+    def model(p: str) -> str:
+        prompts.append(p)
+        if "DENIED" in p:
+            return as_json({"content": "the hippocampus runs on 7269", "rationale": "from the critique"})
+        return as_json({"operations": [
+            {"kind": "new_core", "content": "the hippocampus runs on 7200", "rationale": "x", "source_indexes": [0, 1]},
+            {"kind": "new_core", "content": "reinstall keeps the token", "rationale": "x", "source_indexes": [0, 1]}]})
+    h = make_hippo(model=model)
+    a = short(memory, "hippo port and the token", "t"); b = short(memory, "hippo port and the token again", "t")
+    did = h.sleep()["draft_id"]
+    review(memory, did, [{"op": 0, "verdict": "deny", "critique": "DENIED: 7200 is the model; the hippocampus is 7269"},
+                         {"op": 1, "verdict": "approve"}])     # promotes a and b
+    t = h.tend()
+    assert len(t["resubmitted"]) == 1 and t["resubmitted"][0]["operations"] == 1, t
+    op = memory.get(f"/drafts/{t['resubmitted'][0]['draft_id']}").json()["operations"][0]
+    assert op["content"] == "the hippocampus runs on 7269"
+    assert set(op["source_short_ids"]) == {a, b}, "provenance kept"
+    assert "already promoted them" in prompts[-1]
+
+
+def test_a_chain_that_can_redraft_nothing_ends_instead_of_holding_every_sleep(memory, make_hippo):
+    """A tend that produces no redraft while the model is fine can never move
+    the chain again; left open, one-cycle-at-a-time would refuse every sleep
+    and the age-out would wait forever. It ends and closes."""
+    h = make_hippo(model=lambda p: as_json({"content": "", "rationale": "nothing to say"}) if "DENIED" in p
+                   else as_json({"operations": [
+                       {"kind": "new_core", "content": "x", "rationale": "x", "source_indexes": [0, 1]}]}))
+    short(memory, "a", "t"); short(memory, "b", "t")
+    did = h.sleep()["draft_id"]
+    review(memory, did, [{"op": 0, "verdict": "deny", "critique": "DENIED: no"}])
+    t = h.tend()
+    assert t["resubmitted"] == [] and t["ended"] == [did] and t["closed"] == [did]
+    assert "near" in t["tidy"][did], "the cycle ended, so its tidy ran"
+    assert not h._open_chain()
+    assert not h.sleep().get("refused")
+
+
+def test_a_model_failure_in_a_redraft_leaves_the_chain_waiting(memory, make_hippo):
+    """The other side: the model answering garbage is a failure, and the chain
+    waits for the next tend rather than ending on a bad minute."""
+    h = make_hippo(model=lambda p: "not json at all" if "DENIED" in p else as_json({"operations": [
+        {"kind": "new_core", "content": "x", "rationale": "x", "source_indexes": [0, 1]}]}))
+    short(memory, "a", "t"); short(memory, "b", "t")
+    did = h.sleep()["draft_id"]
+    review(memory, did, [{"op": 0, "verdict": "deny", "critique": "DENIED: no"}])
+    t = h.tend()
+    assert t["ended"] == [] and t["closed"] == [] and t["model_failures"]
+    assert h._open_chain()
 
 
 def test_aging_out_is_at_the_end_of_the_cycle_not_under_a_draft(memory, make_hippo):

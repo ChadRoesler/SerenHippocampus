@@ -106,6 +106,9 @@ class MemoryClient:
     def complete_near(self, entry_id: str) -> dict[str, Any]:
         return self._req("POST", f"/near/{entry_id}/complete")
 
+    def delete_near(self, entry_id: str) -> dict[str, Any]:
+        return self._req("DELETE", f"/near/{entry_id}")
+
     def consume_brief(self, brief_id: str, draft_id: Optional[str] = None) -> dict[str, Any]:
         return self._req("POST", f"/brief/{brief_id}/consume", json={"draft_id": draft_id})
 
