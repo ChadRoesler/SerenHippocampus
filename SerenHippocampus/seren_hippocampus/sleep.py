@@ -60,7 +60,7 @@ OP_KINDS = ("new_core", "attach", "supersede", "verbatim")
 # Stamped on every draft with the model that wrote it (Memory's /audit groups
 # by it). Bump this when a drafting or redrafting prompt changes, so a change
 # in the numbers can be told apart from a change of model (26 Sept 2026).
-PROMPT_VERSION = "2026-09-26"
+PROMPT_VERSION = "2026-09-27"                             # the redraft may withdraw / retarget
 
 
 class Busy(RuntimeError):
@@ -77,6 +77,7 @@ class Hippocampus:
         self._notify_transport = notify_transport
         self.state: dict[str, Any] = self._load_state()
         self._model_failures: list[dict[str, Any]] = []
+        self._withdrawn = 0                                # denied ops the redraft dropped, per tend
         self._served_model = ""          # what the server said it runs, from its last answer
         # While drafting, every model call is kept here and saved as the
         # draft's replay packet (see seren_hippocampus.replay). None = off.
@@ -923,19 +924,24 @@ class Hippocampus:
                     continue
                 self._capture = []
                 failures = len(self._model_failures)
+                self._withdrawn = 0
                 new_ops = self._redraft(denied)
+                if self._withdrawn:
+                    report.setdefault("withdrawn", {})[cluster_id] = self._withdrawn
                 if not new_ops:
                     self._capture = None
                     if len(self._model_failures) > failures:
                         continue                               # the model failed: the next tend tries again
-                    # Nothing to resubmit and nothing failed: the chain can never
-                    # move again. Left open it would hold every later sleep off
-                    # (one cycle at a time) and its age-out forever. End it.
-                    self._log(f"chain {cluster_id}: the redraft produced nothing; ending the chain")
+                    # Nothing to resubmit and nothing failed: every denied op was
+                    # withdrawn, or none could be redrafted. Either way the chain
+                    # can never move again; left open it would hold every later
+                    # sleep off (one cycle at a time) and its age-out forever. End it.
+                    why = "withdrawn" if self._withdrawn == len(denied) else "nothing to redraft"
+                    self._log(f"chain {cluster_id}: {why}; ending the chain")
                     report["ended"].append(cluster_id)
                     if cluster_id not in (self.state.get("ended_chains") or []):
                         self.state["ended_chains"] = (self.state.get("ended_chains") or [])[-200:] + [cluster_id]
-                        self._emit("chain_ended", cluster_id=cluster_id, draft_id=d["id"], why="nothing to redraft")
+                        self._emit("chain_ended", cluster_id=cluster_id, draft_id=d["id"], why=why)
                     report["tidy"][cluster_id] = self._close_chain(d, chain)
                     report["closed"].append(cluster_id)
                     continue
@@ -987,17 +993,36 @@ class Hippocampus:
             else:
                 frag_lines = ("- (none left: an approved operation in this draft already promoted them; "
                               "work from the previous content and the critique)")
+            # The nearest real cores, as the draft side sees them. A redraft used
+            # to keep the op's kind and target and only reword it, so an op aimed
+            # at the wrong core came back aimed at the same core until the chain
+            # was spent (seen live 27 Sept 2026: 'this does not supersede
+            # 5504ed41', as a supersession of 5504ed41). It may now withdraw the
+            # op, or change kind and target - to a core it was shown, never one
+            # it invents.
+            candidates = self._candidates(src + [{"content": op.get("content") or ""}])
+            target = op.get("target_core_id")
+            if target and target not in {c["id"] for c in candidates}:
+                candidates.append({"id": target, "content": "(the core the denied operation targets)", "topic": None})
+            core_lines = "\n".join(f"({c['id']}) {c['content'][:300]}" for c in candidates) or "(none)"
             prompt = (
                 "You are a memory consolidator's drafting worker. A proposed operation on long-term "
-                "memory was DENIED by the reviewer. Write an improved version that addresses the critique. "
-                'Return ONLY JSON: {"content": "...", "restated_content": "...", "rationale": "..."}\n\n'
-                f"Operation kind: {op.get('kind')}\nTopic: {op.get('topic') or 'untagged'}\n"
-                f"Source fragments:\n{frag_lines}\n\nPrevious content: {op.get('content')}\n"
-                f"Critique: {op.get('critique')}\n\nJSON:")
+                "memory was DENIED by the reviewer. Address the critique. Return ONLY JSON, one of:\n"
+                '{"content": "...", "kind": "new_core|attach|supersede", "target_core_id": "...", '
+                '"restated_content": "...", "rationale": "..."}\n'
+                '{"withdraw": true, "rationale": "..."}\n'
+                "Keep the kind and target unless the critique says they are wrong. If the critique says the "
+                "operation should not exist - the wrong core, or already covered - withdraw it. attach and "
+                "supersede need a target_core_id from the cores below, exactly as given; never invent one. "
+                "new_core has no target.\n\n"
+                f"Operation kind: {op.get('kind')}\nTarget core: {target or '(none)'}\n"
+                f"Topic: {op.get('topic') or 'untagged'}\n"
+                f"Source fragments:\n{frag_lines}\n\nExisting cores:\n{core_lines}\n\n"
+                f"Previous content: {op.get('content')}\nCritique: {op.get('critique')}\n\nJSON:")
             denied_op = {k: op.get(k) for k in ("index", "kind", "topic", "target_core_id", "content", "critique")}
             call: dict[str, Any] = {"stage": "redraft", "topic": op.get("topic"), "prompt": prompt,
                                     "entries": [{"id": s["id"], "content": s.get("content") or ""} for s in src],
-                                    "denied": denied_op}
+                                    "candidates": candidates, "denied": denied_op}
             if self._capture is not None:
                 self._capture.append(call)
             t0 = time.time()
@@ -1010,12 +1035,23 @@ class Hippocampus:
                 self._model_failure("redraft", op.get("topic"), str(e))
                 continue
             call.update(answer=raw, seconds=round(time.time() - t0, 2))
-            new = self._parse_redraft(raw, denied_op, call["entries"])
+            new = self._parse_redraft(raw, denied_op, call["entries"], candidates)
+            if new is not None and new.get("withdrawn"):
+                call.update(ops=[], withdrawn=True)
+                self._withdrawn += 1
+                self._log(f"operation {op.get('index')} withdrawn: {new.get('rationale') or 'no reason given'}")
+                continue
             call["ops"] = [new] if new else []
             if new is None and not isinstance(self._json_from(raw), dict):
                 call["error"] = "not the JSON asked for"
                 self._model_failure("redraft", op.get("topic"), "the model's answer was not the JSON asked for: "
                                     + repr((raw or "")[:160]))
+                continue
+            if new is None and self._invented_target(raw, candidates):
+                # A target it was not shown: a failure, like bad JSON - the next
+                # tend asks again rather than landing a guess or ending the chain.
+                call["error"] = "a target core it was not shown"
+                self._model_failure("redraft", op.get("topic"), "the redraft named a core it was not shown")
                 continue
             if new and not src:
                 new["source_short_ids"] = list(op.get("source_short_ids") or [])
@@ -1024,22 +1060,53 @@ class Hippocampus:
                 out.append(new)
         return out
 
-    def _parse_redraft(self, raw: str, op: dict[str, Any], src: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    def _parse_redraft(self, raw: str, op: dict[str, Any], src: list[dict[str, Any]],
+                       candidates: Optional[list[dict[str, Any]]] = None) -> Optional[dict[str, Any]]:
         """A redraft answer turned into the operation that replaces the
-        denied one; None when there is nothing usable. Shared with a replay."""
+        denied one; {"withdrawn": True, ...} when the worker drops it; None
+        when there is nothing usable. Shared with a replay.
+
+        The kind may change among new_core / attach / supersede (a verbatim op
+        stays verbatim: its wording is the person's). The target may change to
+        a core the worker was shown - the candidates, which include the old
+        target - and is None for new_core. A packet from before retargeting
+        has no candidates: the old kind and target hold."""
         parsed = self._json_from(raw)
         if not isinstance(parsed, dict):
             return None
+        rationale = str(parsed.get("rationale") or "")[:500] or None
+        if parsed.get("withdraw") is True:
+            return {"withdrawn": True, "rationale": rationale}
+        kind = op.get("kind")
+        target = op.get("target_core_id")
+        if candidates is not None and kind != "verbatim":
+            asked = str(parsed.get("kind") or kind or "").strip().lower()
+            if asked in ("new_core", "attach", "supersede"):
+                kind = asked
+            if kind == "new_core":
+                target = None
+            else:
+                target = parsed.get("target_core_id") or target
+                if target not in {c["id"] for c in candidates}:
+                    return None                                # invented: see _invented_target
         content = str(parsed.get("content") or "").strip()
-        if op.get("kind") != "attach" and not content:
+        if kind != "attach" and not content:
             return None
-        new = {"kind": op.get("kind"), "content": content, "topic": op.get("topic"),
-               "target_core_id": op.get("target_core_id"),
+        new = {"kind": kind, "content": content, "topic": op.get("topic"), "target_core_id": target,
                "source_short_ids": [s["id"] for s in src], "evidence_count": len(src),
-               "rationale": (str(parsed.get("rationale") or "")[:500] or None)}
-        if op.get("kind") == "attach" and parsed.get("restated_content"):
+               "rationale": rationale}
+        if kind == "attach" and parsed.get("restated_content"):
             new["restated_content"] = str(parsed["restated_content"]).strip()
         return new
+
+    def _invented_target(self, raw: str, candidates: list[dict[str, Any]]) -> bool:
+        """The redraft named an attach / supersede target outside the cores it
+        was shown."""
+        parsed = self._json_from(raw)
+        if not isinstance(parsed, dict) or parsed.get("withdraw") is True:
+            return False
+        t = parsed.get("target_core_id")
+        return bool(t) and t not in {c["id"] for c in candidates}
 
     # ── replay ────────────────────────────────────────────────────────────
     def _save_replay(self, draft_id: Optional[str], **fields: Any) -> None:
@@ -1075,8 +1142,12 @@ class Hippocampus:
                 served = got or served
                 out["answer"] = raw
                 if c.get("stage") == "redraft":
-                    new = self._parse_redraft(raw, c.get("denied") or {}, c.get("entries") or [])
-                    out["ops"] = [new] if new else []
+                    new = self._parse_redraft(raw, c.get("denied") or {}, c.get("entries") or [],
+                                              c.get("candidates"))
+                    if new is not None and new.get("withdrawn"):
+                        out.update(ops=[], withdrawn=True)
+                    else:
+                        out["ops"] = [new] if new else []
                 else:
                     ops = self._parse_draft(raw, c.get("topic"), c.get("entries") or [], c.get("candidates") or [])
                     out["ops"] = ops or []
