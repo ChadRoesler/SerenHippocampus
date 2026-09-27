@@ -217,3 +217,63 @@ def test_the_draft_cap_is_held_and_one_attempt_means_terminal(memory, make_hippo
     review(memory, did, [{"op": 0, "verdict": "deny", "critique": "no"}])
     t = h.tend()
     assert t["resubmitted"] == [] and t["ended"], "no redraft past the cap: the chain ended"
+
+
+def test_a_sleep_by_hand_waits_for_the_open_chain(memory, make_hippo):
+    """Design note: one sleep cycle at a time - no second draft, no second
+    brief consumed, while one is under review. The tick always waited; a sleep
+    by hand (the button, POST /sleep, the MCP sleep_now) did not. It refuses
+    now, records no sleep (bedtime does not move), and works again once the
+    chain has landed."""
+    h = make_hippo(model=lambda p: as_json({"operations": [
+        {"kind": "new_core", "content": "x", "rationale": "x", "source_indexes": [0, 1]}]}))
+    short(memory, "a", "t"); short(memory, "b", "t")
+    memory.post("/brief", json={"summary": "t", "promote_hints": ["t"], "noise_hints": []})
+    did = h.check()["sleep"]["draft_id"]
+    last = h.state.get("last_sleep")
+
+    short(memory, "c", "u"); short(memory, "d", "u")
+    r = h.sleep()
+    assert r["refused"] and r["status"] == "chain_open" and r["draft_id"] is None
+    assert len(memory.get("/drafts", params={"status": "pending"}).json()["entries"]) == 1, "no second draft"
+    assert h.state.get("last_sleep") == last, "a refusal is not a sleep: bedtime does not move"
+
+    review(memory, did, [{"op": 0, "verdict": "approve"}])
+    h.tend()                                           # the chain lands and closes
+    assert not h.sleep().get("refused"), "once it has landed, a sleep by hand runs"
+
+
+def test_aging_out_is_at_the_end_of_the_cycle_not_under_a_draft(memory, make_hippo):
+    """Design note: the hippocampus ages out short-terms, always at the
+    end of a sleep - and the sleep is the whole cycle. A short-term past its
+    lifetime survives while a draft is out (even one whose operation was
+    denied and waits for a redraft), and ages out when the chain lands."""
+    h = make_hippo(model=lambda p: as_json({"content": "x, reworded", "rationale": "the critique"})
+                   if "DENIED" in p else as_json({"operations": [
+                       {"kind": "new_core", "content": "x", "rationale": "x", "source_indexes": [0, 1]}]}))
+    h.state["last_sleep"] = {"finished_at": time.time() - 60, "error": None}   # not a catch-up
+    a = short(memory, "a", "t"); b = short(memory, "b", "t")
+    rep = h.sleep()
+    assert rep["draft_id"] and rep["tidy"] == {"deferred": "until the chain lands"}
+
+    store = memory.app.state.store
+    review(memory, rep["draft_id"], [{"op": 0, "verdict": "deny", "critique": "DENIED: say more"}])
+    got = store.short.get(ids=[a, b], include=["metadatas"])
+    store.short.update(ids=got["ids"], metadatas=[{**m, "ts": time.time() - 90 * 86400}   # past any lifetime
+                                                  for m in got["metadatas"]])
+    t1 = h.tend()                                      # the redraft goes out; nothing ages out
+    assert t1["resubmitted"] and not t1["tidy"]
+    ids = {r["id"] for r in store.get_short_all(limit=None)}
+    assert {a, b} <= ids, "denied and awaiting its redraft: not aged out"
+
+    redraft = t1["resubmitted"][0]["draft_id"]
+    review(memory, redraft, [{"op": 0, "verdict": "deny", "critique": "DENIED: still no"}])
+    t2 = h.tend()
+    while not t2["closed"]:                            # spend the chain
+        nxt = t2["resubmitted"][0]["draft_id"]
+        review(memory, nxt, [{"op": 0, "verdict": "deny", "critique": "DENIED: no"}])
+        t2 = h.tend()
+    cid = t2["closed"][0]
+    assert t2["tidy"][cid]["aged_out"] == 2, "the chain landed: the cycle ends with its age-out"
+    ids = {r["id"] for r in store.get_short_all(limit=None)}
+    assert not ({a, b} & ids)

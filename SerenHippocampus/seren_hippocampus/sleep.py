@@ -18,7 +18,11 @@ SLEEP (every ~20h)
                                  for the sleep. Short-terms already held by a
                                  pending draft are left alone (no re-drafting
                                  the same cluster every run).
-  4. tidy                        age out, maintain near-term, sweep pruned
+  4. tidy                        age out, maintain near-term, sweep pruned -
+                                 at the END of the cycle: here when the sleep
+                                 drafted nothing, otherwise when its chain
+                                 lands (TEND, _close_chain). Nothing ages out
+                                 while a draft is under review or redraft.
 
 TEND (every few minutes)
   A reviewed draft with denied operations and no later attempt in its
@@ -243,12 +247,25 @@ class Hippocampus:
 
     # ── public entry points ───────────────────────────────────────────────
     def sleep(self) -> dict[str, Any]:
-        """Sleep NOW, by hand (POST /sleep, the viewer's button): on the open
-        brief if there is one, without one otherwise. The loop itself never
-        sleeps without a brief - see check()."""
+        """Sleep NOW, by hand (POST /sleep, the viewer's button, the MCP
+        sleep_now): on the open brief if there is one, without one otherwise.
+        The loop itself never sleeps without a brief - see check().
+
+        ONE CYCLE AT A TIME, by hand too. The tick already waited for an open
+        chain to land; a sleep by hand did not, so it could start a second
+        draft - and consume a second brief - beside one still under review.
+        Design note: "there shouldnt be multiple drafts, or multiple
+        briefs... ensuring the sleep cycle completes." It refuses and says
+        why; nothing is recorded as a sleep, so bedtime does not move."""
         if not self._lock.acquire(blocking=False):
             raise Busy("a sleep or tend is already running")
         try:
+            try:
+                if self._open_chain():
+                    return {"refused": True, "status": "chain_open", "draft_id": None, "operations": 0,
+                             "purged": 0, "error": None, "message": "a sleep cycle is already under way - a draft is waiting for review or a redraft; it finishes (review, redraft, the chain lands and the brief is consumed) before another starts"}
+            except MemoryError:
+                pass                                       # _sleep records a dead Memory as it always has
             brief = None
             try:
                 brief = self._mem.latest_brief()
@@ -498,6 +515,11 @@ class Hippocampus:
                     self.state["review_notes"] = notes
                 except Exception as e:  # noqa: BLE001 - the note is a courtesy, the draft is the record
                     self._log(f"could not leave the review note: {e}")
+                # The tidy waits for the chain to land; remember whether this
+                # was a catch-up so the tidy then keeps its promise.
+                pending = dict(self.state.get("chain_catch_up") or {})
+                pending[str(out.get("cluster_id") or out.get("id"))] = catch_up
+                self.state["chain_catch_up"] = pending
                 self._emit("draft_submitted", draft_id=out.get("id"), operations=len(ops),
                            kinds=sorted({op["kind"] for op in ops}), review_note_id=note_id)
             elif self._model_failures:
@@ -514,8 +536,17 @@ class Hippocampus:
                 except Exception as e:  # noqa: BLE001
                     self._log(f"could not consume the brief: {e}")
 
-            # 4. tidy - a catch-up keeps everything that has not been looked at
-            report["tidy"] = self._mem.tidy(age_out=not catch_up, near=True, sweep=not catch_up, purge=False)
+            # 4. tidy - the end of the cycle. Design note: aging out is
+            # always at the end of a sleep, and a sleep is the whole cycle -
+            # draft, review, redraft, the chain landing. With a draft out the
+            # cycle is not over, so the tidy waits for _close_chain; age-out
+            # then never runs under a draft (a short-term whose operation was
+            # denied is not 'held', and could otherwise age out before its
+            # redraft). A catch-up keeps everything that has not been looked at.
+            if report["draft_id"]:
+                report["tidy"] = {"deferred": "until the chain lands"}
+            else:
+                report["tidy"] = self._mem.tidy(age_out=not catch_up, near=True, sweep=not catch_up, purge=False)
         except (MemoryError, Exception) as e:  # noqa: BLE001 - a sleep records its failure and ends
             report["error"] = f"{type(e).__name__}: {e}"
             self._log(f"sleep error: {report['error']}")
@@ -533,10 +564,12 @@ class Hippocampus:
         self._save_state()
         return report
 
-    def _close_chain(self, d: dict[str, Any], chain: list[dict[str, Any]]) -> None:
+    def _close_chain(self, d: dict[str, Any], chain: list[dict[str, Any]]) -> dict[str, Any]:
         """The cull. After the approved operations have been written to long
         by the review, close every reviewed draft in the chain, consume the
-        brief that opened it, complete the review note, and say so."""
+        brief that opened it, complete the review note, say so - and end the
+        sleep cycle with its tidy (age out, near-term, sweep). Returns the
+        tidy's report."""
         cluster_id = d.get("cluster_id") or d["id"]
         for x in chain or [d]:
             if x.get("status") == "reviewed":
@@ -565,9 +598,18 @@ class Hippocampus:
                 self._log(f"could not complete the review note: {e}")
         self.state["review_notes"] = notes
         self.state["brief_misses"] = 0
+        pending = dict(self.state.get("chain_catch_up") or {})
+        catch_up = bool(pending.pop(str(cluster_id), False))
+        self.state["chain_catch_up"] = pending
+        try:
+            tidy = self._mem.tidy(age_out=not catch_up, near=True, sweep=not catch_up, purge=False)
+        except Exception as e:  # noqa: BLE001 - the chain is closed; the next cycle's end tidies
+            tidy = {"error": f"{type(e).__name__}: {e}"}
+            self._log(f"could not tidy at the end of chain {cluster_id}: {e}")
         self._emit("chain_closed", cluster_id=cluster_id, draft_id=d["id"], brief_id=brief_id,
-                   attempts=len(chain or [d]))
+                   attempts=len(chain or [d]), aged_out=tidy.get("aged_out"))
         self._log(f"chain {cluster_id} closed after {len(chain or [d])} attempt(s)")
+        return tidy
 
     def _retire_older_briefs(self, used_id: str, draft_id: str) -> None:
         """The sleep ran on the newest open brief. Any brief still open that
@@ -850,7 +892,7 @@ class Hippocampus:
         start = time.time()
         self._model_failures = []
         report: dict[str, Any] = {"started_at": start, "examined": 0, "resubmitted": [],
-                                  "ended": [], "closed": [], "error": None}
+                                  "ended": [], "closed": [], "tidy": {}, "error": None}
         try:
             reviewed = self._mem.drafts(status="reviewed")
             report["examined"] = len(reviewed)
@@ -868,7 +910,7 @@ class Hippocampus:
                         if cluster_id not in (self.state.get("ended_chains") or []):
                             self.state["ended_chains"] = (self.state.get("ended_chains") or [])[-200:] + [cluster_id]
                             self._emit("chain_ended", cluster_id=cluster_id, draft_id=d["id"])
-                    self._close_chain(d, chain)
+                    report["tidy"][cluster_id] = self._close_chain(d, chain)
                     report["closed"].append(cluster_id)
                     continue
                 self._capture = []

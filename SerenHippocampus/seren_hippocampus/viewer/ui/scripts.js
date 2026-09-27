@@ -81,7 +81,8 @@ function renderReports(status) {
     $('sleep-report').innerHTML = !s ? `<div class="empty">No sleep has run yet.</div>` :
         `<div class="entry ${s.error ? 'bad' : ''}">${s.error ? `<div class="content"><b>Stopped:</b> ${escapeHtml(s.error)}</div>` : ''}
             ${kvTable(s, ['started_at', 'finished_at', 'duration_seconds', 'quiet', 'catch_up', 'purged', 'brief_id', 'brief_pulled', 'clusters', 'operations', 'draft_id', 'held_back'])}
-            ${s.tidy ? `<div class="meta"><span class="badge">tidy</span> aged out ${s.tidy.aged_out ?? '-'} · near expired ${(s.tidy.near || {}).expired ?? '-'} · completed ${(s.tidy.near || {}).completed_promoted ?? '-'} · pruned swept ${s.tidy.pruned_swept ?? '-'}</div>` : ''}
+            ${s.tidy && s.tidy.deferred ? `<div class="meta"><span class="badge">tidy</span> waits for the end of the cycle - age-out runs when the chain lands</div>` :
+              s.tidy ? `<div class="meta"><span class="badge">tidy</span> aged out ${s.tidy.aged_out ?? '-'} · near expired ${(s.tidy.near || {}).expired ?? '-'} · completed ${(s.tidy.near || {}).completed_promoted ?? '-'} · pruned swept ${s.tidy.pruned_swept ?? '-'}</div>` : ''}
          </div>`;
     const t = status.last_tend;
     $('tend-report').innerHTML = !t ? `<div class="empty">No tend has run yet.</div>` :
@@ -270,7 +271,8 @@ async function runNow(kind) {
     btn.disabled = true; out.textContent = `${kind}…`;
     try {
         const r = await api(`/${kind}`, { method: 'POST' });
-        out.textContent = r.error ? `${kind} stopped: ${r.error}` :
+        out.textContent = r.refused ? r.message :
+            r.error ? `${kind} stopped: ${r.error}` :
             kind === 'sleep' ? `sleep done: ${r.operations} operation(s) proposed, ${r.purged} purged` :
                                `tend done: ${(r.resubmitted || []).length} resubmitted`;
     } catch (e) {
