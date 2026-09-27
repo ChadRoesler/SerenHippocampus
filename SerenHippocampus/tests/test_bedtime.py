@@ -194,3 +194,26 @@ def test_an_older_open_brief_retires_with_the_one_the_sleep_used(memory, make_hi
     assert open_ids == [later], "a brief written after the sleep started stays for the next one"
     hist = {b["id"]: b["metadata"] for b in memory.get("/brief", params={"include_consumed": "true"}).json()["entries"]}
     assert hist[older]["consumed_by_draft"] == f"superseded-by-{newer}"
+
+
+def test_the_draft_cap_is_held_and_one_attempt_means_terminal(memory, make_hippo):
+    """Chad, 26 Sept: the draft cap - max rounds of draft and critique, so no
+    endless loop - lives here. 0 would be no draft at all and 999 a chain that
+    runs until the reviewer gives up, so it is held to 1-10; bedtime is held
+    to at least ten minutes. max_attempts 1 means the first draft is the last:
+    submitted terminal, so a denial ends the chain with no redraft."""
+    from seren_hippocampus.config import SleepConfig
+    assert SleepConfig(max_attempts=0).max_attempts == 1
+    assert SleepConfig(max_attempts=999).max_attempts == 10
+    assert SleepConfig(interval_seconds=5).interval_seconds == 600
+
+    h = make_hippo(model=lambda p: as_json({"operations": [
+        {"kind": "new_core", "content": "x", "rationale": "x", "source_indexes": [0, 1]}]}))
+    h._cfg.sleep.max_attempts = 1
+    short(memory, "a", "t"); short(memory, "b", "t")
+    memory.post("/brief", json={"summary": "t", "promote_hints": ["t"], "noise_hints": []})
+    did = h.check()["sleep"]["draft_id"]
+    assert memory.get(f"/drafts/{did}").json()["terminal"] is True
+    review(memory, did, [{"op": 0, "verdict": "deny", "critique": "no"}])
+    t = h.tend()
+    assert t["resubmitted"] == [] and t["ended"], "no redraft past the cap: the chain ended"

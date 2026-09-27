@@ -478,6 +478,8 @@ class Hippocampus:
                 summary = self._summarise(ops)
                 out = self._mem.submit_draft({"summary": summary, "operations": ops,
                                                "brief_id_used": report["brief_id"], "attempt": 1,
+                                               # max_attempts 1 = this is the only attempt
+                                               "terminal": self._cfg.sleep.max_attempts <= 1,
                                                "extra": self._stamp()})
                 report["draft_id"] = out.get("id")
                 self._save_replay(out.get("id"), attempt=1, brief_id=report["brief_id"])
