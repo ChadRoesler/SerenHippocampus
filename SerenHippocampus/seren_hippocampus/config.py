@@ -117,8 +117,9 @@ class SleepConfig(BaseModel):
     # A topic cluster needs this many short-terms to be proposed at all,
     # unless a brief hint, a pin or a verbatim flag says otherwise.
     promote_min_evidence: int = 3
-    # Attempts per chain before the last draft is submitted terminal (the
-    # reviewer may then edit on approve).
+    # The draft cap: attempts per chain, the last submitted terminal (the
+    # reviewer may then edit on approve, and a denial ends the chain - no
+    # endless draft/critique loop). Held to 1-10: 1 = one draft, no redraft.
     max_attempts: int = 3
     # How many existing cores to show the model per cluster as attach /
     # supersede candidates.
@@ -149,6 +150,20 @@ class SleepConfig(BaseModel):
     brief_pull: bool = False
     # Where the hippocampus keeps its own last-run record (it has no store).
     state_path: str = "~/.seren-hippocampus/state.json"
+
+    @field_validator("max_attempts")
+    @classmethod
+    def _cap(cls, v: int) -> int:
+        # 0 would mean no draft at all, 999 a chain that runs until the
+        # reviewer gives up: both are typos, not choices.
+        return max(1, min(10, int(v)))
+
+    @field_validator("interval_seconds")
+    @classmethod
+    def _bedtime_floor(cls, v: int) -> int:
+        # Bedtime less than ten minutes after the last sleep would ask for a
+        # brief on nearly every tick.
+        return max(600, int(v))
 
 
 class NotifyConfig(BaseModel):

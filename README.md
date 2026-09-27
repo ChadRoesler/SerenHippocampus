@@ -214,4 +214,4 @@ two services. Only the small model is faked.
 
 ## License
 
-GPL-3.0-only. See `LICENSE`.
+AGPL-3.0-only. See `LICENSE`.
