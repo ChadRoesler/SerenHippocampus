@@ -17,8 +17,11 @@ needs, for a job that runs a few minutes a night and after a review. So when
 - NEVER stops a server it did not start. If the server already answered when
   the hippocampus looked, someone started it for something else.
 
-Two ways to start it. A COMMAND (`start`, optional `stop`): the hippocampus
-launches the process itself, which is what a desktop with llama-server wants.
+Three ways to start it. The SERVER AND MODEL FILE (`server`, `model_path`,
+optional `server_args`): the hippocampus builds the llama-server line itself,
+host and port taken from model.url. A COMMAND (`start`, optional `stop`): a
+whole command line, for anything the first way cannot say. Both launch the
+process from here, which is what a desktop with llama-server wants.
 Or the node's OBSERVATORY (`observatory_url` + `observatory_service`): the
 model server is a registered service and the Observatory starts and stops it,
 which is what a Jetson wants.
@@ -39,6 +42,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -84,9 +88,33 @@ class ModelLifecycle:
             return False
 
     @property
+    def built(self) -> bool:
+        """server + model_path are set (and no hand-written start overrides them)."""
+        return bool(self._lc.server.strip() and self._lc.model_path.strip() and not self._lc.start.strip())
+
+    @property
     def managed(self) -> bool:
+        # Naming the server and the model file is itself the request to manage.
+        if self.built:
+            return True
         return bool(self._lc.manage and (self._lc.start.strip() or
                                          (self._lc.observatory_url.strip() and self._lc.observatory_service.strip())))
+
+    def built_command(self) -> list[str]:
+        """<server> -m <model_path> --host H --port P <server_args>, H and P
+        from model.url. Raises with the path named when a file is missing, so
+        the failure says what to fix rather than 'exited with code 1'."""
+        server = os.path.expanduser(self._lc.server.strip())
+        model = os.path.expanduser(self._lc.model_path.strip())
+        if not os.path.isfile(server):
+            raise FileNotFoundError(f"model.lifecycle.server not found: {server}")
+        if not os.path.isfile(model):
+            raise FileNotFoundError(f"model.lifecycle.model_path not found: {model}")
+        u = urlsplit(self._model.url or "")
+        host = u.hostname or "127.0.0.1"
+        port = u.port or (443 if u.scheme == "https" else 80)
+        return [server, "-m", model, "--host", host, "--port", str(port),
+                *shlex.split(self._lc.server_args or "", posix=not IS_WINDOWS)]
 
     # ── up / down ─────────────────────────────────────────────────────────
     def ensure_up(self) -> None:
@@ -110,7 +138,7 @@ class ModelLifecycle:
     def _start(self) -> None:
         self.state = "starting"
         t0 = time.time()
-        how = "observatory" if not self._lc.start.strip() else "command"
+        how = "command" if (self._lc.start.strip() or self.built) else "observatory"
         self._log(f"starting the model ({how})")
         try:
             if how == "command":
@@ -145,7 +173,9 @@ class ModelLifecycle:
 
     def _start_command(self) -> None:
         cmd: Any = self._lc.start.strip()
-        if not IS_WINDOWS:
+        if not cmd:
+            cmd = self.built_command()
+        elif not IS_WINDOWS:
             cmd = shlex.split(cmd)
         out = subprocess.DEVNULL
         if self._log_dir is not None:
