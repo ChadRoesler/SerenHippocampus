@@ -277,3 +277,49 @@ def test_every_draft_says_which_model_wrote_it(memory, make_hippo):
         h.model.shutdown()
     h._cfg.model.url = ""
     assert h._stamp() == {"model_mode": "mechanical", "model_prompt": PROMPT_VERSION}
+
+
+# ── the easy way: server + model_path (28 Sept 2026) ─────────────────────
+
+def _built(make_hippo, tmp_path, url="http://127.0.0.1:7200/v1", **lc):
+    server = tmp_path / "llama-server.exe"; server.write_text("")
+    model = tmp_path / "qwen3-4b.gguf"; model.write_text("")
+    h = make_hippo()
+    h._cfg.model.url = url
+    h._cfg.model.lifecycle.server = lc.pop("server", str(server))
+    h._cfg.model.lifecycle.model_path = lc.pop("model_path", str(model))
+    for k, v in lc.items():
+        setattr(h._cfg.model.lifecycle, k, v)
+    return h, str(server), str(model)
+
+
+def test_the_server_and_model_file_build_the_command(make_hippo, tmp_path):
+    h, server, model = _built(make_hippo, tmp_path, server_args="-ngl 99 -c 8192 -fa on")
+    assert h.model.managed, "naming the server and the model file turns management on"
+    assert h.model.built_command() == [server, "-m", model, "--host", "127.0.0.1", "--port", "7200",
+                                       "-ngl", "99", "-c", "8192", "-fa", "on"]
+
+
+def test_host_and_port_come_from_the_model_url(make_hippo, tmp_path):
+    h, _, _ = _built(make_hippo, tmp_path, url="http://0.0.0.0:9123/v1", server_args="")
+    assert h.model.built_command()[3:] == ["--host", "0.0.0.0", "--port", "9123"]
+
+
+def test_a_hand_written_start_line_still_wins(make_hippo, tmp_path):
+    h, _, _ = _built(make_hippo, tmp_path, start="my-server --port 7200")
+    assert not h.model.built and h.model.managed is False, "start alone needs manage: true, as before"
+    h._cfg.model.lifecycle.manage = True
+    assert h.model.managed
+
+
+def test_a_missing_model_file_fails_and_names_the_path(memory, make_hippo, tmp_path):
+    port = _free_port()
+    h, _, _ = _built(make_hippo, tmp_path, url=f"http://127.0.0.1:{port}/v1",
+                     model_path=str(tmp_path / "not-here.gguf"), ready_timeout_seconds=1)
+    h.__dict__.pop("_call_model", None)
+    short(memory, "the nuc stays on focal", "nuc"); short(memory, "the nuc hates jammy", "nuc")
+    _brief(memory, ["nuc"])
+    rep = h.check()
+    err = rep["sleep"]["error"] or ""
+    assert "model_path not found" in err and "not-here.gguf" in err, rep
+    assert h.model.state == "failed"

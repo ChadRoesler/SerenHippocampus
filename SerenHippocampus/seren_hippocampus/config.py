@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -61,7 +61,17 @@ class ModelLifecycleConfig(BaseModel):
     See seren_hippocampus.model_lifecycle for the why (a Nano floor, a 4 GB
     card). Off by default: a server that is simply left running still works."""
     manage: bool = False
-    # A command line that starts the server (llama-server, ollama serve ...).
+    # THE EASY WAY: name the server and the model file, and the hippocampus
+    # builds the command itself - <server> -m <model_path> --host/--port (both
+    # from model.url, so they cannot disagree) <server_args>. Setting both
+    # turns management on; `manage` need not be set. Design note: the
+    # hand-written `start` line was the part nobody could set up without
+    # help, and Starwright asked for a url and nothing else.
+    server: str = ""                     # path to llama-server (or a compatible server)
+    model_path: str = ""                 # path to the .gguf it serves
+    server_args: str = "-ngl 99 -c 8192"   # everything else on the line
+    # THE ESCAPE HATCH: a whole command line that starts the server (llama-server,
+    # ollama serve ...). Wins over server/model_path when set.
     start: str = ""
     # Optional command that stops it. Blank = stop the process we started.
     stop: str = ""
@@ -166,6 +176,46 @@ class SleepConfig(BaseModel):
         return max(600, int(v))
 
 
+class RippleConfig(BaseModel):
+    """Ask the model, don't just tell the log (seren_hippocampus.ripple has the
+    why). type "" is off; "script" runs `command` (an argument list, or one
+    string split like a shell would, never run BY a shell); "endpoint" POSTs
+    the event and its message to `url`. `messages` overrides the default
+    wording per event; {message}, {event} and {draft_id} fill the command."""
+    type: str = ""
+    command: Union[list[str], str] = Field(default_factory=lambda: ["claude", "-p", "{message}"])
+    cwd: str = ""
+    # Whose account the script runs as (seren_sinew.runas). Blank = this
+    # service's own - refused when that is root or LocalSystem.
+    run_as: str = ""
+    # true: the message goes on the command's stdin instead of {message} - for
+    # `ssh desktop claude -p` with neither Lodestar nor an Observatory, where
+    # a remote shell would re-parse an argument.
+    stdin: bool = False
+    timeout_seconds: int = 900
+    url: str = ""
+    bearer_token: str = Field(default="", repr=False)
+    bearer_token_env: str = ""
+    bearer_token_keyring: str = ""
+    events: list[str] = Field(default_factory=lambda: ["brief_requested", "draft_submitted", "tend_resubmitted"])
+    messages: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("type")
+    @classmethod
+    def _known_type(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v in ("", "off", "none"):
+            return ""
+        if v not in ("script", "endpoint"):
+            raise ValueError(f"ripple.type must be script, endpoint or empty, not {v!r}")
+        return v
+
+    def resolve_bearer(self) -> str:
+        return resolve_token(inline=self.bearer_token or None,
+                             keyring_ref=self.bearer_token_keyring or None,
+                             env_var=self.bearer_token_env or None)
+
+
 class NotifyConfig(BaseModel):
     """Where to say that something happened. Events are always kept on the
     service (GET /events); a webhook_url gets each one POSTed as JSON, best
@@ -207,6 +257,7 @@ class HippocampusConfig(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     sleep: SleepConfig = Field(default_factory=SleepConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
+    ripple: RippleConfig = Field(default_factory=RippleConfig)
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
 
     def resolved_state_path(self) -> Path:

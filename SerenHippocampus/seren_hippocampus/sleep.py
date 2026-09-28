@@ -53,6 +53,7 @@ import httpx
 from .config import HippocampusConfig
 from .memory_client import MemoryClient, MemoryError
 from .model_lifecycle import ModelLifecycle, ModelUnavailable
+from .ripple import Ripple
 from . import replay as rp
 
 OP_KINDS = ("new_core", "attach", "supersede", "verbatim")
@@ -84,6 +85,8 @@ class Hippocampus:
         self._capture: Optional[list[dict[str, Any]]] = None
         self.model = ModelLifecycle(cfg.model, log=self._log, emit=self._emit,
                                     log_dir=self._state_path().parent)
+        self.ripple = Ripple(cfg.ripple, log=self._log, transport=notify_transport,
+                           log_dir=self._state_path().parent)
 
     # ── when is the next sleep due ────────────────────────────────────────
     def next_sleep_due(self, now: Optional[float] = None) -> float:
@@ -148,6 +151,10 @@ class Hippocampus:
                 ev["delivered"] = False
                 ev["delivery_error"] = f"{type(e).__name__}: {e}"
                 self._log(f"webhook {kind} failed: {e}")
+        # The ripple: the question, where the webhook is the record. hip-ripple.
+        ripple = getattr(self, "ripple", None)          # None while __init__ is still wiring
+        if ripple is not None and ripple.wants(kind):
+            ev["ripple"] = ripple.fire(ev)
 
     # ── state (the only thing this service keeps) ─────────────────────────
     def _state_path(self) -> Path:

@@ -38,8 +38,15 @@ model:
   # Start the model only when a sleep or a redraft needs it, stop it after.
   # For a Nano floor or a small card: the drafting model is not loaded all day.
   lifecycle:
+    # The easy way: name the server and the model file. The hippocampus builds
+    # <server> -m <model_path> --host/--port (from url above) <server_args>,
+    # and naming both turns management on.
+    # server: "C:\\llama\\llama-server.exe"          # or ~/llama.cpp/build/bin/llama-server on a node
+    # model_path: "C:\\models\\qwen3-4b-q5.gguf"
+    # server_args: "-ngl 99 -c 8192"                  # the default; add -fa on, cache types, threads...
+    # Or the whole line by hand (wins over the two above; needs manage: true):
     manage: false
-    # start: "C:\\llama\\llama-server.exe -m C:\\models\\qwen3-1.7b-q4.gguf --port 8090 -ngl 99"
+    # start:"C:\\llama\\llama-server.exe -m C:\\models\\qwen3-1.7b-q4.gguf --port 8090 -ngl 99"
     # stop: ""                 # blank = stop the process the hippocampus started
     # observatory_url: http://127.0.0.1:7777      # or: a service the node's Observatory manages
     # observatory_service: seren-llama
@@ -75,3 +82,23 @@ notify:
   # bearer_token_env: SEREN_HIPPOCAMPUS_WEBHOOK_TOKEN
   events: [draft_submitted, sleep_failed, chain_ended, purged]
   timeout_seconds: 10
+
+ripple:
+  # Where notify is the record, the ripple is the question: when bedtime comes
+  # (brief_requested), or a draft or redraft is waiting for review, the
+  # hippocampus asks the model instead of waiting to be remembered.
+  #   script   - run a command. {message}, {event} and {draft_id} are filled
+  #              per argument; the event also arrives in SEREN_RIPPLE_EVENT,
+  #              SEREN_RIPPLE_MESSAGE and SEREN_RIPPLE_JSON. Never run by a shell.
+  #   endpoint - POST the event and its message to url, with the bearer.
+  # The command runs as this service's account: a CLI whose login lives in a
+  # user profile (claude, for one) needs the service to run as that user, and
+  # its memory tools pre-approved so a headless run doesn't stop at a prompt.
+  type: ""                        # "" (off) | script | endpoint
+  command: ["claude", "-p", "{message}"]
+  # url: http://127.0.0.1:6361/hooks/ripple
+  # bearer_token_env: SEREN_HIPPOCAMPUS_RIPPLE_TOKEN
+  events: [brief_requested, draft_submitted, tend_resubmitted]
+  timeout_seconds: 900
+  # messages:                     # override the wording per event
+  #   brief_requested: "It's bedtime, the assistant - want to write a brief?"
