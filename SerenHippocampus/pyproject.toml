@@ -39,8 +39,10 @@ dev = [
     # The tests run the REAL SerenMemory app in-process behind an ASGI
     # transport, so the contract between the two is exercised, not mocked.
     # 4.0.0 is the first Memory with /drafts (the docket rename) and without
-    # the in-process consolidator: release Memory first, then this.
-    "seren-memory>=4.0.0",
+    # the in-process consolidator: release Memory first, then this. 4.5.0 is
+    # the first with target_op (hip-draft-deps); tests/test_draft_target_op.py
+    # skips its Memory-side checks on anything older rather than failing.
+    "seren-memory>=4.5.0",
 ]
 
 [project.scripts]

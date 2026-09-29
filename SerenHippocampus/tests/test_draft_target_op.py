@@ -15,7 +15,25 @@ Pinned here:
 """
 from __future__ import annotations
 
+import pytest
+
 from conftest import as_json, cores, review, short
+
+
+def _memory_takes_target_op() -> bool:
+    try:
+        from seren_memory.models.schemas import DraftOperation
+        return "target_op" in DraftOperation.model_fields
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# These land dependents in a real Memory. CI installs seren-memory from PyPI,
+# and until a release carries target_op the hippocampus rightly leaves the
+# dependents out (see the older-Memory test) - so they skip, not fail.
+needs_target_op_memory = pytest.mark.skipif(
+    not _memory_takes_target_op(),
+    reason="the installed seren-memory predates target_op (hip-draft-deps); runs once Memory ships it")
 
 CORE = {"kind": "new_core", "content": "Chad's dream of me.", "rationale": "a dream", "source_indexes": [0]}
 SAT = {"kind": "attach", "content": "The face, from the second dream.", "rationale": "detail",
@@ -42,6 +60,7 @@ def test_the_prompt_offers_target_op(memory, make_hippo):
     assert '"target_op"' in prompts[0]
 
 
+@needs_target_op_memory
 def test_a_dependent_reaches_memory_remapped_and_lands_on_its_core(memory, make_hippo):
     # position 0 is dropped (an invented core id), so the new core moves from 1 to 0
     bad = {"kind": "attach", "content": "x", "target_core_id": "f" * 32, "source_indexes": [0]}
@@ -69,6 +88,7 @@ def test_a_target_op_on_anything_but_a_surviving_new_core_is_dropped(memory, mak
     assert [op["kind"] for op in got] == ["new_core"] and got[0]["content"] == "A second core."
 
 
+@needs_target_op_memory
 def test_target_op_follows_the_op_into_the_whole_draft(memory, make_hippo):
     """Clusters are drafted one by one and concatenated: a dependent in the
     second cluster points past the first cluster's ops."""
@@ -97,6 +117,7 @@ def test_an_older_memory_gets_the_draft_without_the_dependents(memory, make_hipp
     assert any("does not take target_op" in m for m in said)
 
 
+@needs_target_op_memory
 def test_a_denied_dependent_redrafts_onto_its_approved_core(memory, make_hippo):
     prompts: list[str] = []
 
@@ -118,6 +139,7 @@ def test_a_denied_dependent_redrafts_onto_its_approved_core(memory, make_hippo):
     assert op.get("target_op") is None, "a redraft names real cores only"
 
 
+@needs_target_op_memory
 def test_a_dependent_whose_core_was_denied_is_told_so(memory, make_hippo):
     prompts: list[str] = []
 
