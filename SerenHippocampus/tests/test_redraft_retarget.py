@@ -110,6 +110,48 @@ def test_the_old_answer_shape_keeps_kind_and_target(memory, make_hippo):
     assert (op["kind"], op["target_core_id"]) == ("supersede", target)
 
 
+def test_the_prompt_says_a_wrong_target_moves_not_withdraws(memory, make_hippo):
+    """Seen live 28 Sept 2026: every critique said 'wrong target, move it',
+    and a prompt that listed 'the wrong core' as a reason to withdraw made a
+    4B withdraw all six."""
+    prompts: list[str] = []
+
+    def model(p):
+        prompts.append(p)
+        return as_json({"content": "reworded", "rationale": "x"})
+    h = make_hippo(model=model)
+    wrong = _core(memory, "A sleep fires when a brief is open.")
+    _denied_chain(memory, h, {"kind": "supersede", "content": "x", "target_core_id": wrong})
+    h.tend()
+    p = prompts[-1]
+    assert "A wrong target is not a reason to withdraw" in p
+    assert "the wrong core, or already covered - withdraw" not in p
+
+
+def test_a_new_core_written_in_restated_content_is_kept(memory, make_hippo):
+    """Seen live 28 Sept 2026: the corrected text came back in
+    restated_content with no content, and the op vanished."""
+    wrong = _core(memory, "A sleep fires when a brief is open.")
+    h = make_hippo(model=lambda p: as_json({"kind": "new_core", "restated_content": "The model runs on 7200.",
+                                             "rationale": "its own fact"}))
+    _denied_chain(memory, h, {"kind": "supersede", "content": "x", "target_core_id": wrong})
+    op = memory.get(f"/drafts/{h.tend()['resubmitted'][0]['draft_id']}").json()["operations"][0]
+    assert (op["kind"], op["content"]) == ("new_core", "The model runs on 7200.")
+
+
+def test_an_answer_with_no_usable_op_is_said_not_swallowed(memory, make_hippo):
+    """JSON with nothing to land used to vanish without a word. It still ends
+    the chain (test_bedtime pins why), but the log says what was dropped."""
+    wrong = _core(memory, "A sleep fires when a brief is open.")
+    h = make_hippo(model=lambda p: as_json({"kind": "new_core", "rationale": "forgot the text"}))
+    said: list[str] = []
+    h._log = said.append
+    did = _denied_chain(memory, h, {"kind": "supersede", "content": "x", "target_core_id": wrong})
+    t = h.tend()
+    assert t["resubmitted"] == [] and t["ended"] == [did]
+    assert any("no usable operation" in m and "forgot the text" in m for m in said)
+
+
 def test_a_verbatim_op_stays_verbatim(memory, make_hippo):
     h = make_hippo(model=lambda p: as_json({"kind": "new_core", "content": "never piss on an electric fence",
                                              "rationale": "x"}))
