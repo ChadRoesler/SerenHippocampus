@@ -131,6 +131,22 @@ registered service), waits for its health check, keeps it warm for
 that. It never stops a server it did not start: one that already answered was
 started by someone else.
 
+The easy way to set it up is to name the server and the model file, and let
+the hippocampus build the command line itself:
+
+```yaml
+model:
+  url: "http://127.0.0.1:7200/v1"          # host and port for the server come from here
+  lifecycle:
+    server: "C:\\llama\\llama-server.exe"  # on a node: ~/llama.cpp/build/bin/llama-server
+    model_path: "C:\\models\\qwen3-4b-q5.gguf"
+    server_args: "-ngl 99 -c 8192"          # the default; add -fa on, cache types...
+```
+
+Naming both turns management on. A missing file fails the sleep with its path
+in the error. A hand-written `start` line still works and wins over the two.
+Starwright: `--model-server` / `--model-path` / `--model-args`.
+
 A configured model that cannot be reached is a failed sleep that keeps its
 brief for the next check - never a mechanical copy of the fragments. After a
 failed start the next attempt waits `retry_after_seconds`. `/status` carries
@@ -154,11 +170,11 @@ cp seren-hippocampus.yaml.sample ~/seren-hippocampus/seren-hippocampus.yaml
 python -m seren_hippocampus --config ~/seren-hippocampus/seren-hippocampus.yaml
 ```
 
-The config has five blocks: `server` (this service's bind and bearer),
+The config has six blocks: `server` (this service's bind and bearer),
 `memory` (where SerenMemory is and the bearer to present to it - the same
 three pointers as every server block), `model` (the small model's
 OpenAI-compatible endpoint), `sleep` (intervals or a wall-clock time,
-thresholds, attempts, the catch-up grace), `notify` (below).
+thresholds, attempts, the catch-up grace), `notify` and `ripple` (below).
 Beyond loopback with no bearer the service refuses to start, like every
 Seren service.
 
@@ -219,6 +235,77 @@ is recorded on the event and never fails the sleep. This is the seed of
 "shoot me a text": Lodestar, Symposium, or a messaging bridge sits at the
 other end and decides who to tell. Until something does, the reviewer pulls -
 `list_drafts` on Memory at the start of a session shows what is waiting.
+
+## The ripple: waking the model
+
+The webhook is the record; the ripple is the question. At bedtime the
+hippocampus asks the main model for its brief, and when a draft or a redraft
+lands it asks for a review - rather than waiting for the model to remember.
+Named for the sharp-wave ripples a sleeping hippocampus fires to reach the
+cortex. The woken model answers with its Memory tools (`submit_brief`,
+`get_draft`, `review_draft`), so the cycle runs on its own:
+
+    hippocampus: "it's bedtime - want to write a brief?"   -> the model writes one
+    hippocampus: "I drafted tonight's memories - review?"  -> approve, or deny with a critique
+    hippocampus: "redrafted what you denied - again?"      -> ...until it lands
+
+It fires on `brief_requested`, `draft_submitted` and `tend_resubmitted`
+(`ripple.events`), one at a time per event, and each event records what the
+ripple did.
+
+**Where the model lives decides the route.** Pick the first one that fits:
+
+| setup | on the hippocampus |
+|---|---|
+| the model is on this box | `type: script` - the hippocampus runs the command itself |
+| the model's box runs an Observatory | `type: endpoint`, `url: http://<box>:7777/api/v1/system/ripple`, that Observatory's bearer |
+| there is a Lodestar | `type: endpoint` at Lodestar's `/api/v1/system/ripple`; Lodestar's `ripple.target` names the node (or `local`) |
+| two boxes, neither installed | `type: script`, `command: ssh <box> claude -p`, `stdin: true` |
+
+The receiving end (an Observatory with `ripple.enabled`, or Lodestar with a
+`target`) runs its own configured command; a caller only ever sends the
+message. With `stdin: true` the message goes on the command's stdin instead
+of `{message}`, so a remote shell never parses it.
+
+**Waking Claude Code on this box** - the script route, set up for Claude Code:
+
+```yaml
+ripple:
+  type: script
+  command: ["claude", "-p", "{message}",
+            "--allowedTools", "mcp__wren-memory,mcp__wren-loci,mcp__wren-corpuscallosum,mcp__wren-margin,mcp__wren-hippocampus"]
+  cwd: "D:\\serenDaemon\\SerenCore"     # the project the memory MCP servers are registered for
+  run_as: "Caesar"                       # whose login `claude` uses
+```
+
+Starwright writes this for you: give the hippocampus card
+`--ripple-claude <project folder>` (`-RippleClaude`). It reads
+`~/.claude.json`, finds the MCP servers registered for that folder, and
+writes the command with those servers' tools pre-approved and the folder as
+the working directory. For it to work:
+
+- **Claude Code is installed and logged in** as `run_as`.
+- **The memory MCP servers are registered for `cwd`.** Claude Code keeps
+  local-scope servers per folder; started anywhere else, the model wakes
+  without its memory. (User-scope servers work from any folder.)
+- **Their tools are pre-approved** (`--allowedTools`). A headless
+  `claude -p` cannot answer a permission prompt, so an unapproved
+  `submit_brief` just stalls.
+- **The person is logged on**, when the hippocampus runs as LocalSystem. It
+  starts the command in their logged-on session - their PATH, their profile,
+  no stored password. Logged out, the ripple says so, and the brief gate asks
+  again later.
+
+**Whose account.** `run_as` is the account the command runs as
+(`seren_sinew.runas`): a root service drops to it with `runuser`, a
+LocalSystem one borrows the person's logged-on session, and the same account
+runs it directly. A root or LocalSystem hippocampus with **no** `run_as`
+refuses to run the command - a config edit must not be a root shell. The
+Starwright cards fill `run_as` with whoever runs the install.
+
+Starwright flags: `--ripple script|endpoint|off` (a dropdown in the TUI),
+`--ripple-command`, `--ripple-url`, `--ripple-token`, `--ripple-run-as`,
+`--ripple-stdin`, `--ripple-claude`.
 
 ## The window
 

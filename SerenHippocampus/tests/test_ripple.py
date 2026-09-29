@@ -185,3 +185,20 @@ def test_a_stdin_ripple_sends_the_message_on_stdin(make_hippo, tmp_path):
     got = _wait_for(out)
     assert "bedtime" in got["stdin"].lower() and got["argv"] == []
     h.ripple.wait()
+
+
+def test_the_ripple_block_is_read_from_the_yaml(tmp_path):
+    """load_config reads `ripple:` off disk. It once built every block but this
+    one, so a card-written ripple loaded as off and nothing fired - every test
+    above set RippleConfig by hand (found live, 28 Sept 2026, first real ripple)."""
+    from seren_hippocampus.config import load_config
+    p = tmp_path / "seren-hippocampus.yaml"
+    p.write_text(
+        "ripple:\n"
+        "  type: script\n"
+        '  command: ["claude", "-p", "{message}", "--allowedTools", "mcp__wren-memory"]\n'
+        '  cwd: "D:/serenDaemon/SerenCore"\n'
+        "  run_as: 'Caesar'\n", encoding="utf-8")
+    r = load_config(str(p)).ripple
+    assert r.type == "script" and r.run_as == "Caesar" and r.cwd == "D:/serenDaemon/SerenCore"
+    assert r.command[-1] == "mcp__wren-memory"

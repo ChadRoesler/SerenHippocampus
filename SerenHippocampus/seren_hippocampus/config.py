@@ -328,6 +328,7 @@ def load_config(explicit_path: Optional[str] = None) -> HippocampusConfig:
         sleep=_block(SleepConfig, data.get("sleep"), "sleep"),      # type: ignore[arg-type]
         updates=_block(UpdatesConfig, data.get("updates"), "updates"),  # type: ignore[arg-type]
         notify=_block(NotifyConfig, data.get("notify"), "notify"),      # type: ignore[arg-type]
+        ripple=_block(RippleConfig, data.get("ripple"), "ripple"),      # type: ignore[arg-type]
     )
     off = os.getenv(f"{ENV_PREFIX}_UPDATES_ENABLED")
     if off is not None:
