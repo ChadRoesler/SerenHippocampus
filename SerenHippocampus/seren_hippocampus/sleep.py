@@ -61,7 +61,7 @@ OP_KINDS = ("new_core", "attach", "supersede", "verbatim")
 # Stamped on every draft with the model that wrote it (Memory's /audit groups
 # by it). Bump this when a drafting or redrafting prompt changes, so a change
 # in the numbers can be told apart from a change of model (26 Sept 2026).
-PROMPT_VERSION = "2026-09-27"                             # the redraft may withdraw / retarget
+PROMPT_VERSION = "2026-09-28"                             # a wrong target moves, it is not withdrawn
 
 
 class Busy(RuntimeError):
@@ -1018,10 +1018,12 @@ class Hippocampus:
                 '{"content": "...", "kind": "new_core|attach|supersede", "target_core_id": "...", '
                 '"restated_content": "...", "rationale": "..."}\n'
                 '{"withdraw": true, "rationale": "..."}\n'
-                "Keep the kind and target unless the critique says they are wrong. If the critique says the "
-                "operation should not exist - the wrong core, or already covered - withdraw it. attach and "
-                "supersede need a target_core_id from the cores below, exactly as given; never invent one. "
-                "new_core has no target.\n\n"
+                "Keep the kind and target unless the critique says they are wrong. A wrong target is not a "
+                "reason to withdraw: move the operation to the right core below, or make it a new_core if "
+                "none of them fits. Withdraw only when the critique says the content should not be in "
+                "memory at all - already covered, or not true. attach and supersede need a target_core_id "
+                "from the cores below, exactly as given; never invent one. new_core has no target. Put the "
+                "operation's text in content.\n\n"
                 f"Operation kind: {op.get('kind')}\nTarget core: {target or '(none)'}\n"
                 f"Topic: {op.get('topic') or 'untagged'}\n"
                 f"Source fragments:\n{frag_lines}\n\nExisting cores:\n{core_lines}\n\n"
@@ -1060,6 +1062,16 @@ class Hippocampus:
                 call["error"] = "a target core it was not shown"
                 self._model_failure("redraft", op.get("topic"), "the redraft named a core it was not shown")
                 continue
+            if new is None:
+                # JSON, but no operation in it (a new_core with no text, say).
+                # Not a failure: asked again it tends to answer the same, and a
+                # chain that cannot move must end, not hold every sleep off. But
+                # it used to vanish without a word (seen live 28 Sept 2026), so
+                # say what was dropped.
+                call["error"] = "no usable operation in the answer"
+                self._log(f"operation {op.get('index')}: the redraft had no usable operation, dropped: "
+                          + repr((raw or "")[:160]))
+                continue
             if new and not src:
                 new["source_short_ids"] = list(op.get("source_short_ids") or [])
                 new["evidence_count"] = max(1, len(new["source_short_ids"]))
@@ -1097,6 +1109,11 @@ class Hippocampus:
                 if target not in {c["id"] for c in candidates}:
                     return None                                # invented: see _invented_target
         content = str(parsed.get("content") or "").strip()
+        if not content and kind != "attach":
+            # The text in restated_content instead: a new core or a supersession
+            # has only the one statement, so that is it. Seen live 28 Sept 2026
+            # (a supersede with the whole corrected dream in restated_content).
+            content = str(parsed.get("restated_content") or "").strip()
         if kind != "attach" and not content:
             return None
         new = {"kind": kind, "content": content, "topic": op.get("topic"), "target_core_id": target,
