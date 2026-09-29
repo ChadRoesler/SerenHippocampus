@@ -500,7 +500,8 @@ class Hippocampus:
             ops: list[dict[str, Any]] = []
             self._capture = []
             for topic, entries in clusters.items():
-                ops += self._propose(topic, entries, promote_hints, noise_hints, brief)
+                ops += self._shifted(self._propose(topic, entries, promote_hints, noise_hints, brief), len(ops))
+            ops = self._submittable(ops)
             report["operations"] = len(ops)
             if ops:
                 summary = self._summarise(ops)
@@ -757,7 +758,7 @@ class Hippocampus:
         # next sleep. It used to fall back to copying the longest fragment
         # verbatim and call that a draft (seen on the first real sleep, 25 Sept 2026).
         # A model that answered and proposed nothing is taken at its word.
-        ops += drafted
+        ops += self._shifted(drafted, len(ops))
         return ops
 
     def _candidates(self, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -815,7 +816,9 @@ class Hippocampus:
             "fragments contradict or replace an existing core (content = the new statement). new_core = "
             "nothing existing covers it (content = one durable statement, present tense, no preamble). "
             "verbatim = only when the exact wording is the point. Use core ids exactly as given and never "
-            "invent one. Every operation lists the fragment indexes it is built from. Fewer, better "
+            "invent one. To attach to (or supersede) a new_core you propose in this same answer, give "
+            '"target_op": <that new_core\'s position in your list, from 0> instead of target_core_id. '
+            "Every operation lists the fragment indexes it is built from. Fewer, better "
             "operations beat many. Weigh the steer when there is one: it says what mattered, which the "
             "fragments alone cannot."
             f"{steer_block}\n\n"
@@ -857,10 +860,15 @@ class Hippocampus:
                       candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Only what the store will accept: known kinds, real core ids, real
         fragment indexes, non-empty content. A model that invents an id gets
-        that operation dropped, not the whole draft."""
+        that operation dropped, not the whole draft.
+
+        target_op (an attach / supersede on a new_core in the same answer) is
+        the model's position in ITS list; ops dropped here shift positions, so
+        it is remapped to the returned list, and an op whose new_core did not
+        survive is dropped like an invented target."""
         core_ids = {c["id"] for c in candidates}
-        out: list[dict[str, Any]] = []
-        for raw in (raw_ops or []):
+        kept: list[tuple[int, dict[str, Any], Optional[int]]] = []   # (answer position, op, its target_op)
+        for pos, raw in enumerate(raw_ops or []):
             if not isinstance(raw, dict):
                 continue
             kind = str(raw.get("kind", "")).strip().lower()
@@ -878,9 +886,14 @@ class Hippocampus:
                 idxs = list(range(len(entries)))
             content = str(raw.get("content") or "").strip()
             target = raw.get("target_core_id")
+            target_op: Optional[int] = None
             if kind in ("attach", "supersede"):
                 if target not in core_ids:
-                    continue
+                    try:
+                        target_op = int(raw.get("target_op"))
+                    except (TypeError, ValueError):
+                        continue
+                    target = None
             else:
                 target = None
             if kind != "attach" and not content:
@@ -891,8 +904,48 @@ class Hippocampus:
                   "rationale": str(raw.get("rationale") or "")[:500] or None}
             if kind == "attach" and raw.get("restated_content"):
                 op["restated_content"] = str(raw["restated_content"]).strip()
+            kept.append((pos, op, target_op))
+        # new_cores that survived, by answer position; an op on one that did
+        # not (or on itself, or on anything but a new_core) goes
+        cores_at = {pos for pos, op, _ in kept if op["kind"] == "new_core"}
+        kept = [(pos, op, t) for pos, op, t in kept if t is None or (t in cores_at and t != pos)]
+        final = {pos: i for i, (pos, _, _) in enumerate(kept)}
+        out: list[dict[str, Any]] = []
+        for _, op, t in kept:
+            if t is not None:
+                op["target_op"] = final[t]
             out.append(op)
         return out
+
+    def _submittable(self, ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """ops with target_op go only to a Memory that says it takes them
+        (features on /health). An older Memory drops the unknown field and
+        then refuses the WHOLE draft - an attach with no target_core_id - so
+        there the dependents are left out and their short-terms wait for a
+        later sleep. Nothing else moves: only new_cores are ever targeted, and
+        no op that stays points anywhere."""
+        if not any(op.get("target_op") is not None for op in ops):
+            return ops
+        try:
+            takes = "target_op" in (self._mem.health().get("features") or [])
+        except Exception:  # noqa: BLE001 - unknown means no
+            takes = False
+        if takes:
+            return ops
+        kept = [op for op in ops if op.get("target_op") is None]
+        self._log(f"memory does not take target_op (older build): {len(ops) - len(kept)} operation(s) "
+                  "on a new core in this draft left for a later sleep")
+        return kept
+
+    @staticmethod
+    def _shifted(ops: list[dict[str, Any]], base: int) -> list[dict[str, Any]]:
+        """ops about to be appended after `base` others: their target_op
+        positions move with them."""
+        if base:
+            for op in ops:
+                if op.get("target_op") is not None:
+                    op["target_op"] += base
+        return ops
 
     @staticmethod
     def _summarise(ops: list[dict[str, Any]]) -> str:
@@ -932,7 +985,7 @@ class Hippocampus:
                 self._capture = []
                 failures = len(self._model_failures)
                 self._withdrawn = 0
-                new_ops = self._redraft(denied)
+                new_ops = self._redraft(self._resolve_target_ops(denied, d), made=self._chain_cores(chain))
                 if self._withdrawn:
                     report.setdefault("withdrawn", {})[cluster_id] = self._withdrawn
                 if not new_ops:
@@ -980,7 +1033,39 @@ class Hippocampus:
         self._save_state()
         return report
 
-    def _redraft(self, denied: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    @staticmethod
+    def _resolve_target_ops(denied: list[dict[str, Any]], d: dict[str, Any]) -> list[dict[str, Any]]:
+        """A denied op that named target_op (a new_core in its draft): if that
+        core was approved it exists now, and it is the op's target; if not,
+        the op has no target and the redraft must find one. A redraft never
+        sends target_op - its ops are the only ones in their draft."""
+        ops = d.get("operations") or []
+        out = []
+        for op in denied:
+            t = op.get("target_op")
+            if t is not None and not op.get("target_core_id"):
+                core = ops[t] if isinstance(t, int) and 0 <= t < len(ops) else {}
+                op = {**op, "target_core_id": core.get("long_term_id") if core.get("status") == "approved" else None,
+                      "_target_op_denied": core.get("status") != "approved"}
+            out.append(op)
+        return out
+
+    @staticmethod
+    def _chain_cores(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The cores this chain has created so far: the right home for a
+        denied op is often one approved beside it (hip-draft-deps). Nearest-
+        core search may not rank a core minutes old, so they are shown."""
+        made = []
+        for x in chain:
+            for op in x.get("operations") or []:
+                if (op.get("status") == "approved" and op.get("long_term_id")
+                        and op.get("kind") in ("new_core", "supersede", "verbatim")):
+                    made.append({"id": op["long_term_id"], "topic": op.get("topic"),
+                                 "content": op.get("edited_content") or op.get("content") or ""})
+        return made
+
+    def _redraft(self, denied: list[dict[str, Any]],
+                 made: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
         if not self.model_configured:
             self._log("denied operations need a model to redraft; none configured")
             return []
@@ -1008,10 +1093,15 @@ class Hippocampus:
             # op, or change kind and target - to a core it was shown, never one
             # it invents.
             candidates = self._candidates(src + [{"content": op.get("content") or ""}])
+            for c in made or []:                       # the cores this chain created, first
+                if c["id"] not in {x["id"] for x in candidates}:
+                    candidates.insert(0, dict(c))
             target = op.get("target_core_id")
             if target and target not in {c["id"] for c in candidates}:
                 candidates.append({"id": target, "content": "(the core the denied operation targets)", "topic": None})
             core_lines = "\n".join(f"({c['id']}) {c['content'][:300]}" for c in candidates) or "(none)"
+            target_line = target or ("(none - it pointed at a new core in its draft that was not approved)"
+                                     if op.get("_target_op_denied") else "(none)")
             prompt = (
                 "You are a memory consolidator's drafting worker. A proposed operation on long-term "
                 "memory was DENIED by the reviewer. Address the critique. Return ONLY JSON, one of:\n"
@@ -1024,7 +1114,7 @@ class Hippocampus:
                 "memory at all - already covered, or not true. attach and supersede need a target_core_id "
                 "from the cores below, exactly as given; never invent one. new_core has no target. Put the "
                 "operation's text in content.\n\n"
-                f"Operation kind: {op.get('kind')}\nTarget core: {target or '(none)'}\n"
+                f"Operation kind: {op.get('kind')}\nTarget core: {target_line}\n"
                 f"Topic: {op.get('topic') or 'untagged'}\n"
                 f"Source fragments:\n{frag_lines}\n\nExisting cores:\n{core_lines}\n\n"
                 f"Previous content: {op.get('content')}\nCritique: {op.get('critique')}\n\nJSON:")
