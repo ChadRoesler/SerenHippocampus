@@ -32,6 +32,7 @@ from . import __version__
 from .config import HippocampusConfig, load_config
 from .memory_client import MemoryClient, MemoryError
 from .sleep import Busy, Hippocampus
+from .voice import VoiceError
 
 
 def create_app(config: Optional[HippocampusConfig] = None,
@@ -233,6 +234,34 @@ def create_app(config: Optional[HippocampusConfig] = None,
                 body.get("extra_body"), body.get("timeout_seconds"))
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'\""))
+
+    # -- the voice card (seren_hippocampus.voice): the MCP tools' HTTP twins,
+    # for a harness that is not MCP. 404 while it is off - opt in.
+    def _voice(request: Request):
+        v = request.app.state.hippocampus.voice
+        if not v.enabled:
+            raise HTTPException(404, "the voice card is off (opt in: voice.enabled: true)")
+        return v
+
+    @app.get("/voice")
+    async def voice_get(request: Request):
+        cur = await asyncio.to_thread(_voice(request).current)
+        return {"version": 0, "text": None} if not cur else cur
+
+    @app.put("/voice")
+    async def voice_put(request: Request, body: dict = Body(...)):
+        """{"text": the whole card, "why": what changed}. A new version; the
+        old ones are kept. The same text is not a new version."""
+        v = _voice(request)
+        try:
+            return await asyncio.to_thread(v.set, str((body or {}).get("text") or ""), str(body.get("why") or ""))
+        except VoiceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/voice/history")
+    async def voice_history(request: Request, limit: int = 10):
+        rows = await asyncio.to_thread(_voice(request).history, max(1, min(int(limit), 200)))
+        return {"count": len(rows), "versions": rows}
 
     @app.get("/viewer")
     async def viewer():

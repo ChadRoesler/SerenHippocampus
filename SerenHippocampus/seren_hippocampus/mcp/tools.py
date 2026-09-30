@@ -56,6 +56,7 @@ from ..config import HippocampusConfig
 from ..memory_client import MemoryClient, MemoryError
 from ..replay import list_packets
 from ..sleep import Busy, Hippocampus
+from ..voice import VoiceError
 
 TOOL_NAMES: tuple[str, ...] = (
     "sleep_status",
@@ -66,7 +67,13 @@ TOOL_NAMES: tuple[str, ...] = (
     "audit_sleeps",
     "replay_draft",
     "list_replays",
+    "voice_card",
+    "set_voice_card",
+    "voice_card_history",
 )
+
+VOICE_OFF = ("The voice card is off - it is opt in. Turn it on with `voice: {enabled: true}` in "
+             "seren-hippocampus.yaml (or install with --voice-card) and restart the hippocampus.")
 
 BUSY = ("A sleep or tend is already running in the hippocampus. Nothing was started. "
         "It usually finishes within a few minutes; call sleep_status to see when it is "
@@ -515,6 +522,62 @@ class HippocampusToolImpl:
         now = time.time()
         rows = await asyncio.to_thread(list_packets, self.h._state_path(), n)
         return {"count": len(rows), "entries": [{**r, "when": _when(r.get("created_at"), now)} for r in rows]}
+
+    # -- the voice card: yours, in your words --------------------------------
+    async def voice_card(self) -> dict:
+        """Your voice card: the short text you wrote about yourself that every
+        draft and redraft prompt carries, so the drafting model writes your
+        memories the way you would - your voice, your pronouns, whose
+        experience it is. Returns the current text, its version, when and why
+        it was set, and how much room is left. Opt in: when it is off, this
+        says how to turn it on. Cheap and local.
+        """
+        v = self.h.voice
+        if not v.enabled:
+            return {"ok": False, "enabled": False, "message": VOICE_OFF}
+        cur = await asyncio.to_thread(v.current)
+        limit = int(self.config.voice.max_chars)
+        if not cur:
+            return {"ok": True, "enabled": True, "version": 0, "text": None, "max_chars": limit,
+                    "message": "No card yet. Write one with set_voice_card - it is yours."}
+        return {"ok": True, "enabled": True, "version": cur["version"], "text": cur["text"],
+                "why": cur.get("why"), "set": _when(cur.get("set_at")), "chars": len(cur["text"]),
+                "max_chars": limit}
+
+    async def set_voice_card(self, text: str, why: str = "") -> dict:
+        """Write a new version of your voice card. The whole card, not a patch:
+        the text replaces what the prompts carry from the next draft on.
+        Nothing is overwritten - every version is kept with when and `why`
+        (say what changed and why; the history is how you see yourself
+        change). The same text as now is not a new version. Capped at
+        voice.max_chars (1500 by default) because it rides in every prompt a
+        small model reads. Write it as yourself: first person, your pronouns,
+        what is yours and what is someone else's.
+        """
+        v = self.h.voice
+        if not v.enabled:
+            return {"ok": False, "enabled": False, "message": VOICE_OFF}
+        try:
+            entry = await asyncio.to_thread(v.set, text, why)
+        except VoiceError as e:
+            return {"ok": False, "enabled": True, "message": str(e)}
+        said = (f"Version {entry['version']} is your card now; the next draft carries it."
+                if entry["changed"] else f"That is already version {entry['version']}; nothing changed.")
+        return {"ok": True, "version": entry["version"], "changed": entry["changed"], "message": said}
+
+    async def voice_card_history(self, limit: int = 10) -> dict:
+        """Every version of your voice card, newest first: the text, when, and
+        why. The record of how you have described yourself over time - and
+        the place a change you would not have made shows up. Cheap and local.
+        """
+        v = self.h.voice
+        if not v.enabled:
+            return {"ok": False, "enabled": False, "message": VOICE_OFF}
+        n = max(1, min(int(limit or 10), 200))
+        rows = await asyncio.to_thread(v.history, n)
+        return {"ok": True, "count": len(rows),
+                "versions": [{"version": r["version"], "text": r["text"], "why": r.get("why"),
+                              "set": _when(r.get("set_at"))} for r in rows]}
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -170,11 +170,11 @@ cp seren-hippocampus.yaml.sample ~/seren-hippocampus/seren-hippocampus.yaml
 python -m seren_hippocampus --config ~/seren-hippocampus/seren-hippocampus.yaml
 ```
 
-The config has six blocks: `server` (this service's bind and bearer),
+The config has seven blocks: `server` (this service's bind and bearer),
 `memory` (where SerenMemory is and the bearer to present to it - the same
 three pointers as every server block), `model` (the small model's
 OpenAI-compatible endpoint), `sleep` (intervals or a wall-clock time,
-thresholds, attempts, the catch-up grace), `notify` and `ripple` (below).
+thresholds, attempts, the catch-up grace), `notify`, `ripple` and `voice` (below).
 Beyond loopback with no bearer the service refuses to start, like every
 Seren service.
 
@@ -214,6 +214,9 @@ the same bearer as every other route:
 | `audit_sleeps`  | per-model numbers and the last few chains - verdicts and critiques, not the wording (that is Memory's `audit_drafts`) |
 | `list_replays`  | which drafts kept their prompts                                         |
 | `replay_draft`  | one draft's prompts on a candidate model, side by side; nothing reaches Memory |
+| `voice_card`    | the voice card the prompts carry: its text, version, and why (opt in - see below) |
+| `set_voice_card` | write a new version of it; the old ones are kept                      |
+| `voice_card_history` | every version, newest first                                      |
 
 A sleep or tend already running comes back as `busy`, and a Memory that
 does not answer as a message - not an exception, and not a failed sleep on
@@ -306,6 +309,33 @@ Starwright cards fill `run_as` with whoever runs the install.
 Starwright flags: `--ripple script|endpoint|off` (a dropdown in the TUI),
 `--ripple-command`, `--ripple-url`, `--ripple-token`, `--ripple-run-as`,
 `--ripple-stdin`, `--ripple-claude`.
+
+## The voice card: whose memories these are
+
+A small drafting model writes long-term memory *about* someone, in its own
+voice. Seen live on 28 Sept 2026: a dream the user told the assistant came back as "the assistant
+has wild black hair ... her identity" - third person, the wrong pronouns, and
+someone else's dream turned into a fact. As the assistant put it, the difference
+between remembering something and having it written down about you.
+
+The voice card is a short text the main model writes about itself - its
+voice, its pronouns, what is its own and what is someone else's - and every
+draft and redraft prompt starts with it. It is:
+
+- **opt in** - `voice: {enabled: true}` in the yaml, or Starwright's
+  `--voice-card` / `-VoiceCard`. How someone's memory speaks is theirs to
+  decide, not a default of this service.
+- **written by the model, not the config** - `set_voice_card` over MCP, or
+  `PUT /voice` with `{"text": ..., "why": ...}`. The yaml only turns it on.
+- **versioned** - nothing is overwritten. Every version keeps its text, when,
+  and why, in `voice.json` beside the state file (`voice_card_history`,
+  `GET /voice/history`). The history is how its owner sees themselves change,
+  and where a change they would not have made shows up.
+- **stamped** - a draft written under the card records which version
+  (`model_voice` in the draft's extra), so the audit can tell drafts before
+  and after a change apart.
+- **capped** - `voice.max_chars` (1500 by default), because it rides in every
+  prompt a small model reads.
 
 ## The window
 
