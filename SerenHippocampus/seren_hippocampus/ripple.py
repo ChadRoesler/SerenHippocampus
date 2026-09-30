@@ -57,6 +57,10 @@ DEFAULT_MESSAGES = {
     "tend_resubmitted": (
         "The hippocampus redrafted operations you denied. Review the new attempt on your memory server: "
         "list_drafts, get_draft, then review_draft."),
+    "brief_unmatched": (
+        "The hippocampus slept on your brief, but none of its promote_hints matched a memory, so it kept "
+        "nothing. The brief is set aside, not used up. Write a new one with submit_brief: hints that are "
+        "short phrases lifted from the memories themselves, or their topic tags."),
 }
 
 

@@ -197,7 +197,8 @@ class RippleConfig(BaseModel):
     bearer_token: str = Field(default="", repr=False)
     bearer_token_env: str = ""
     bearer_token_keyring: str = ""
-    events: list[str] = Field(default_factory=lambda: ["brief_requested", "draft_submitted", "tend_resubmitted"])
+    events: list[str] = Field(default_factory=lambda: ["brief_requested", "draft_submitted", "tend_resubmitted",
+                                                       "brief_unmatched"])
     messages: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("type")

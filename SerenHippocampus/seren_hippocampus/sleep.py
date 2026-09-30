@@ -59,6 +59,92 @@ from . import replay as rp
 
 OP_KINDS = ("new_core", "attach", "supersede", "verbatim")
 
+# ── grouping memories, and matching a brief's hints to them (30 Sept 2026) ──
+# Memories used to be grouped by their exact topic string, so "wren,chad,
+# identity" and "wren,chad,identity,dream" never met: three copies of one dream
+# landed in three piles of one, and a pile of one rarely has the evidence to be
+# kept (hip-cluster-tags). They now group by shared tags - Jaccard against the
+# pile's FIRST memory, so a pile cannot drift by chaining - capped so one pile
+# never outgrows a small model's context.
+CLUSTER_MIN_OVERLAP = 0.5
+CLUSTER_MAX = 12
+
+# A hint used to count only if its whole text appeared, letter for letter, in
+# a memory: "Seren's drift tell: losing the bit" never matched "she stopped
+# being in on the bit", and the biggest day of the week drafted nothing
+# (hip-hint-match, 28 Sept). Now: exact text first, then one of the memory's
+# tags, then - promote hints only - most of the hint's words. Noise hints stay
+# strict: a noise match holds a whole pile back, and a loose one there would
+# quietly drop the very memories a brief was trying to keep.
+HINT_MIN_WORDS = 0.6
+_HINT_SKIP = {"the", "and", "for", "with", "that", "this", "from", "about", "was", "were", "are",
+              "his", "her", "their", "its", "our", "you", "your", "not", "but", "into", "out"}
+
+
+def _tags(topic: Any) -> frozenset[str]:
+    return frozenset(t.strip().lower() for t in str(topic or "").split(",") if t.strip())
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def hint_match(hint: str, tags: frozenset[str], haystack: str, hay_words: set[str],
+               loose: bool = True) -> Optional[str]:
+    """How a brief's hint matches a pile of memories: "exact" (its text is in
+    them), "tag" (it is one of their tags), "words" (most of its words are
+    there - loose only), or None."""
+    h = (hint or "").strip().lower()
+    if not h:
+        return None
+    if h in haystack:
+        return "exact"
+    if h in tags:
+        return "tag"
+    if not loose:
+        return None
+    words = [w for w in re.findall(r"[a-z0-9]+", h) if len(w) >= 3 and w not in _HINT_SKIP]
+    if len(words) < 2:
+        return None
+
+    def seen(w: str) -> bool:
+        if w in hay_words:
+            return True
+        stem = w[:max(4, len(w) - 2)]                      # "drift" finds "drifting"
+        return len(w) >= 4 and any(t.startswith(stem) for t in hay_words)
+    return "words" if sum(seen(w) for w in words) / len(words) >= HINT_MIN_WORDS else None
+
+
+def cluster_by_tags(shorts: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """(topic, memories) piles. A memory joins the pile whose first memory
+    shares the most of its tags (at least CLUSTER_MIN_OVERLAP, Jaccard), else
+    starts a pile; the pile's topic is its first memory's. Untagged memories
+    share one pile. Order is kept: oldest-first input, oldest-first piles."""
+    piles: list[tuple[frozenset[str], str, list[dict[str, Any]]]] = []
+    untagged: list[dict[str, Any]] = []
+    for s in shorts:
+        topic = (s.get("metadata") or {}).get("topic") or ""
+        tags = _tags(topic)
+        if not tags:
+            untagged.append(s)
+            continue
+        best, best_j = None, 0.0
+        for pile in piles:
+            anchor, _, members = pile
+            if len(members) >= CLUSTER_MAX:
+                continue
+            j = len(tags & anchor) / len(tags | anchor)
+            if j > best_j:
+                best, best_j = pile, j
+        if best is not None and best_j >= CLUSTER_MIN_OVERLAP:
+            best[2].append(s)
+        else:
+            piles.append((tags, str(topic), [s]))
+    out = [(topic, members) for _, topic, members in piles]
+    if untagged:
+        out.append(("_untagged", untagged))
+    return out
+
 # Stamped on every draft with the model that wrote it (Memory's /audit groups
 # by it). Bump this when a drafting or redrafting prompt changes, so a change
 # in the numbers can be told apart from a change of model (26 Sept 2026).
@@ -80,6 +166,7 @@ class Hippocampus:
         self.state: dict[str, Any] = self._load_state()
         self._model_failures: list[dict[str, Any]] = []
         self._withdrawn = 0                                # denied ops the redraft dropped, per tend
+        self._hint_hits: dict[tuple[str, str], list[str]] = {}   # per sleep: (promote|noise, hint) -> topics
         self._served_model = ""          # what the server said it runs, from its last answer
         # While drafting, every model call is kept here and saved as the
         # draft's replay packet (see seren_hippocampus.replay). None = off.
@@ -350,7 +437,12 @@ class Hippocampus:
                 self._emit("purged", count=len(purged), ids=[t.get("id") for t in purged])
 
             brief = self._mem.latest_brief()
-            if brief:
+            if brief and brief.get("id") in (self.state.get("parked_briefs") or []):
+                # Its hints matched nothing and it drafted nothing: it waits for
+                # a rewrite (a newer brief) instead of sleeping on every tick.
+                report["brief_id"] = brief.get("id")
+                report["status"] = "brief_unmatched"
+            elif brief:
                 report["brief_id"] = brief.get("id")
                 if self._open_chain():
                     report["status"] = "chain_open"        # the brief waits for the chain to land
@@ -500,17 +592,29 @@ class Hippocampus:
             held = self._held_short_ids()
             free = [s for s in shorts if s["id"] not in held]
             report["held_back"] = len(shorts) - len(free)
-            clusters: dict[str, list[dict[str, Any]]] = {}
-            for s in free:
-                clusters.setdefault((s.get("metadata") or {}).get("topic") or "_untagged", []).append(s)
+            clusters = cluster_by_tags(free)
             report["clusters"] = len(clusters)
 
             ops: list[dict[str, Any]] = []
             self._capture = []
-            for topic, entries in clusters.items():
+            self._hint_hits = {}
+            for topic, entries in clusters:
                 ops += self._shifted(self._propose(topic, entries, promote_hints, noise_hints, brief), len(ops))
             ops = self._submittable(ops)
             report["operations"] = len(ops)
+
+            # What each hint matched, said out loud. A brief whose promote hints
+            # matched nothing used to be consumed as 'ok, 0 operations' - the
+            # same as a night where nothing happened (hip-brief-unmatched).
+            if brief and not brief.get("_pulled") and (promote_hints or noise_hints):
+                report["hints"] = {
+                    "promote": {h: self._hint_hits.get(("promote", h), []) for h in sorted(promote_hints)},
+                    "noise": {h: self._hint_hits.get(("noise", h), []) for h in sorted(noise_hints)}}
+                if promote_hints and not report["quiet"] and not any(report["hints"]["promote"].values()):
+                    report["brief_unmatched"] = True
+                    self._log(f"brief {brief.get('id')}: none of its promote hints matched a memory "
+                              f"({', '.join(sorted(promote_hints))})")
+                    self._emit("brief_unmatched", brief_id=brief.get("id"), hints=sorted(promote_hints))
             if ops:
                 summary = self._summarise(ops)
                 out = self._mem.submit_draft({"summary": summary, "operations": ops,
@@ -547,6 +651,14 @@ class Hippocampus:
                 # for the next check, and the sleep says why it stopped.
                 raise RuntimeError("the model could not draft: " + "; ".join(
                     f"{f['topic'] or 'untagged'}: {f['why']}" for f in self._model_failures[:3]))
+            elif brief and not brief.get("_pulled") and brief.get("id") and report.get("brief_unmatched"):
+                # Nothing drafted BECAUSE the hints matched nothing: the brief is
+                # parked, not consumed, so the model can rewrite it (a new brief
+                # supersedes it). The check skips a parked brief, or it would
+                # sleep on it again every tick.
+                parked = list(self.state.get("parked_briefs") or [])
+                if brief["id"] not in parked:
+                    self.state["parked_briefs"] = (parked + [brief["id"]])[-50:]
             elif brief and not brief.get("_pulled") and brief.get("id"):
                 # A brief with nothing to draft from: nothing to review, so the
                 # brief has done its job. Consume it or the check loops forever.
@@ -741,8 +853,16 @@ class Hippocampus:
         pinned = [e for e in remaining if (e.get("metadata") or {}).get("pinned")]
         threshold = self._cfg.sleep.promote_min_evidence
         haystack = (topic.lower() + " || " + " ".join((e.get("content") or "").lower() for e in entries))
-        kept = sorted(h for h in promote_hints if h and h in haystack)
-        noise = sorted(h for h in noise_hints if h and h in haystack)
+        tags = _tags(topic).union(*[_tags((e.get("metadata") or {}).get("topic")) for e in entries])
+        hay_words = _words(haystack)
+        kept = sorted(h for h in promote_hints if hint_match(h, tags, haystack, hay_words))
+        noise = sorted(h for h in noise_hints if hint_match(h, tags, haystack, hay_words, loose=False))
+        hits = getattr(self, "_hint_hits", None)
+        if hits is not None:
+            for h in kept:
+                hits.setdefault(("promote", h), []).append(topic)
+            for h in noise:
+                hits.setdefault(("noise", h), []).append(topic)
         if kept:
             threshold = 1
         if noise:
