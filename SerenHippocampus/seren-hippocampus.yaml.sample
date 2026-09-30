@@ -102,3 +102,13 @@ ripple:
   timeout_seconds: 900
   # messages:                     # override the wording per event
   #   brief_requested: "It's bedtime, Wren - want to write a brief?"
+
+voice:
+  # The voice card: a short text the main model writes about itself - its
+  # voice, its pronouns, whose experience is whose - that every draft and
+  # redraft prompt carries, so a small drafting model writes its memories the
+  # way it would, not as a third-person case file. Opt in. The card is never
+  # written here: the model writes it (set_voice_card over MCP, or PUT /voice),
+  # and every version is kept beside the state file, in voice.json.
+  enabled: false
+  max_chars: 1500                 # it rides in every prompt a small model reads

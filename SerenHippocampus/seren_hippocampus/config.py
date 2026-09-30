@@ -242,6 +242,15 @@ class NotifyConfig(BaseModel):
                              env_var=self.bearer_token_env or None)
 
 
+class VoiceConfig(BaseModel):
+    """The voice card (seren_hippocampus.voice has the why): a short text the
+    main model writes about itself, carried by every draft and redraft
+    prompt. Off unless opted in; the card itself is written over MCP
+    (set_voice_card) or PUT /voice, never here, and every version is kept."""
+    enabled: bool = False
+    max_chars: int = Field(default=1500, ge=100, le=8000)
+
+
 class UpdatesConfig(BaseModel):
     """"Is there a newer seren-hippocampus" checking. Core in seren-meninges,
     on by default, cosmetic, opt-outable."""
@@ -258,6 +267,7 @@ class HippocampusConfig(BaseModel):
     sleep: SleepConfig = Field(default_factory=SleepConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     ripple: RippleConfig = Field(default_factory=RippleConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
 
     def resolved_state_path(self) -> Path:
@@ -329,6 +339,7 @@ def load_config(explicit_path: Optional[str] = None) -> HippocampusConfig:
         updates=_block(UpdatesConfig, data.get("updates"), "updates"),  # type: ignore[arg-type]
         notify=_block(NotifyConfig, data.get("notify"), "notify"),      # type: ignore[arg-type]
         ripple=_block(RippleConfig, data.get("ripple"), "ripple"),      # type: ignore[arg-type]
+        voice=_block(VoiceConfig, data.get("voice"), "voice"),          # type: ignore[arg-type]
     )
     off = os.getenv(f"{ENV_PREFIX}_UPDATES_ENABLED")
     if off is not None:

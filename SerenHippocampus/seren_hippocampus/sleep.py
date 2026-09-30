@@ -54,6 +54,7 @@ from .config import HippocampusConfig
 from .memory_client import MemoryClient, MemoryError
 from .model_lifecycle import ModelLifecycle, ModelUnavailable
 from .ripple import Ripple
+from .voice import VoiceCard
 from . import replay as rp
 
 OP_KINDS = ("new_core", "attach", "supersede", "verbatim")
@@ -87,6 +88,8 @@ class Hippocampus:
                                     log_dir=self._state_path().parent)
         self.ripple = Ripple(cfg.ripple, log=self._log, transport=notify_transport,
                            log_dir=self._state_path().parent)
+        # Whose memories these are, in their words (opt in; seren_hippocampus.voice).
+        self.voice = VoiceCard(cfg.voice, self._state_path().parent / "voice.json")
 
     # ── when is the next sleep due ────────────────────────────────────────
     def next_sleep_due(self, now: Optional[float] = None) -> float:
@@ -225,9 +228,14 @@ class Hippocampus:
         says who wrote it."""
         if not self.model_configured:
             return {"model_mode": "mechanical", "model_prompt": PROMPT_VERSION}
-        return {"model_mode": "model", "model_name": self._cfg.model.name,
-                "model_served": self._served_model, "model_url": self._cfg.model.url,
-                "model_prompt": PROMPT_VERSION}
+        stamp = {"model_mode": "model", "model_name": self._cfg.model.name,
+                 "model_served": self._served_model, "model_url": self._cfg.model.url,
+                 "model_prompt": PROMPT_VERSION}
+        # Which voice card the prompts carried: a draft written under v3 of
+        # someone's card reads differently from one under v1, or none.
+        if self.voice.block():
+            stamp["model_voice"] = self.voice.version()
+        return stamp
 
     @staticmethod
     def _json_from(text: str) -> Optional[Any]:
@@ -806,6 +814,7 @@ class Hippocampus:
         core_lines = "\n".join(f"({c['id']}) {c['content'][:300]}" for c in candidates) or "(none)"
         steer_block = f"\n\nSteer:\n{steer}" if steer else ""
         prompt = (
+            f"{self.voice.block()}"
             "You are a memory consolidator's drafting worker. Below are short-term memory fragments "
             "about one topic, and the existing long-term CORES closest to them. Propose operations on "
             "long-term memory. Return ONLY JSON in this shape:\n"
@@ -1103,6 +1112,7 @@ class Hippocampus:
             target_line = target or ("(none - it pointed at a new core in its draft that was not approved)"
                                      if op.get("_target_op_denied") else "(none)")
             prompt = (
+                f"{self.voice.block()}"
                 "You are a memory consolidator's drafting worker. A proposed operation on long-term "
                 "memory was DENIED by the reviewer. Address the critique. Return ONLY JSON, one of:\n"
                 '{"content": "...", "kind": "new_core|attach|supersede", "target_core_id": "...", '
