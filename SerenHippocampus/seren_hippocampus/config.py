@@ -125,8 +125,19 @@ class SleepConfig(BaseModel):
     mode: str = "thread"
     # ~20h, deliberately not 24: the window drifts through the day.
     interval_seconds: int = 20 * 3600
-    # How often denied operations are picked up and resubmitted.
-    tend_interval_seconds: int = 300
+    # THE HEARTBEAT: how often the loop turns. One turn is cheap - it closes
+    # chains that landed, looks for a brief, counts the misses after bedtime
+    # and stops an idle model - and none of that starts the small model.
+    tick_seconds: int = 300
+    # THE TEND CYCLE: redrafting what the reviewer denied, which DOES start the
+    # small model. On (the default), denied operations are redrafted every
+    # tend_interval_seconds. Off, they wait for sleep time - bedtime passing,
+    # or a new brief arriving - so the model only comes up when a sleep is due.
+    # For a box where the small model and the main model share memory (the user,
+    # 30 Sept 2026, on a Nano: 'we dont want tend to run willy nilly and cause
+    # an OOM for the main model'). tend_now by hand redrafts either way.
+    tend_cycle: bool = True
+    tend_interval_seconds: int = 600
     max_entries_per_run: int = 500
     # A topic cluster needs this many short-terms to be proposed at all,
     # unless a brief hint, a pin or a verbatim flag says otherwise.
@@ -148,7 +159,7 @@ class SleepConfig(BaseModel):
     # CATCH-UP: it drafts and purges but does not age out or sweep, so nothing
     # that never had its chance is trashed before someone has looked.
     gap_grace_intervals: float = 3.0
-    # THE BRIEF IS THE GATE. Every tick (tend_interval_seconds) the
+    # THE BRIEF IS THE GATE. Every tick (tick_seconds) the
     # hippocampus checks Memory for an open brief. One there means sleep now:
     # the draft cycle runs on it. None means wait. Once bedtime has passed
     # (interval_seconds / at, above) the misses are counted, and every
@@ -171,6 +182,23 @@ class SleepConfig(BaseModel):
         # 0 would mean no draft at all, 999 a chain that runs until the
         # reviewer gives up: both are typos, not choices.
         return max(1, min(10, int(v)))
+
+    @field_validator("tick_seconds")
+    @classmethod
+    def _tick_floor(cls, v: int) -> int:
+        return max(30, int(v))
+
+    @field_validator("tend_interval_seconds")
+    @classmethod
+    def _tend_floor(cls, v: int) -> int:
+        return max(60, int(v))
+
+    def heartbeat_seconds(self) -> int:
+        """How often the loop turns. Never slower than the tend interval: a
+        config from before the two were split set only tend_interval_seconds
+        (it WAS the heartbeat), and a redraft due every two minutes on a
+        five-minute heartbeat would never be on time."""
+        return min(self.tick_seconds, self.tend_interval_seconds) if self.tend_cycle else self.tick_seconds
 
     @field_validator("interval_seconds")
     @classmethod

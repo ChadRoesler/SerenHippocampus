@@ -246,6 +246,7 @@ class Hippocampus:
         self._model_failures: list[dict[str, Any]] = []
         self._withdrawn = 0                                # denied ops the redraft dropped, per tend
         self._hint_hits: dict[tuple[str, str], list[str]] = {}   # per sleep: (promote|noise, hint) -> topics
+        self._next_redraft_at = 0.0                        # tend cycle on: the loop redrafts no sooner than this
         self._cut_off = False                              # the last parsed answer ran out of tokens
         self._cut_offs = 0                                 # how many did, this sleep
         self._served_model = ""          # what the server said it runs, from its last answer
@@ -459,13 +460,46 @@ class Hippocampus:
         finally:
             self._lock.release()
 
-    def tend(self) -> dict[str, Any]:
+    def tend(self, redraft: bool = True) -> dict[str, Any]:
+        """Tend the open chains. By hand (tend_now, POST /tend) it always
+        redrafts. The loop passes redraft=False when the tend cycle says not
+        now: chains that landed are still closed, denied operations wait."""
         if not self._lock.acquire(blocking=False):
             raise Busy("a sleep or tend is already running")
         try:
-            return self._tend()
+            return self._tend(redraft)
         finally:
             self._lock.release()
+
+    def redraft_due(self, now: Optional[float] = None) -> bool:
+        """Whether this turn of the loop may redraft - the one part of a tend
+        that starts the small model. Tend cycle on: every tend_interval_seconds.
+        Off: only at sleep time, which is bedtime having passed or a NEW brief
+        waiting (not the open chain's own). Bedtime has to count: an open
+        chain keeps its brief open, so the check never asks for another one,
+        and a redraft waiting only for a new brief would wait for ever."""
+        now = time.time() if now is None else now
+        s = self._cfg.sleep
+        if s.tend_cycle:
+            if now < self._next_redraft_at:
+                return False
+            self._next_redraft_at = now + s.tend_interval_seconds
+            return True
+        if now >= self.next_sleep_due(now):
+            return True
+        return self._new_brief_waiting()
+
+    def _new_brief_waiting(self) -> bool:
+        """An open brief that no draft still in play was written from: the
+        main model saying a sleep may start."""
+        try:
+            brief = self._mem.latest_brief()
+            if not brief or brief.get("id") in (self.state.get("parked_briefs") or []):
+                return False
+            used = {d.get("brief_id_used") for st in ("pending", "reviewed") for d in self._mem.drafts(status=st)}
+            return brief.get("id") not in used
+        except MemoryError:
+            return False
 
     def check(self, now: Optional[float] = None) -> dict[str, Any]:
         """Check for a brief; sleep on it if one is there and no chain is
@@ -480,7 +514,7 @@ class Hippocampus:
     def tick(self) -> dict[str, Any]:
         """One turn of the loop: tend the open chains, check for a brief, and
         stop a model this hippocampus started once it has gone idle."""
-        out = {"tend": self.tend(), "check": self.check()}
+        out = {"tend": self.tend(redraft=self.redraft_due()), "check": self.check()}
         try:
             out["model_stopped"] = self.model.maybe_stop()
         except Exception as e:  # noqa: BLE001
@@ -1222,11 +1256,11 @@ class Hippocampus:
         return f"{', '.join(parts)} across {', '.join(topics)[:200]}"
 
     # ── tend ──────────────────────────────────────────────────────────────
-    def _tend(self) -> dict[str, Any]:
+    def _tend(self, redraft: bool = True) -> dict[str, Any]:
         start = time.time()
         self._model_failures = []
         report: dict[str, Any] = {"started_at": start, "examined": 0, "resubmitted": [],
-                                  "ended": [], "closed": [], "tidy": {}, "error": None}
+                                  "ended": [], "closed": [], "deferred": [], "tidy": {}, "error": None}
         try:
             reviewed = self._mem.drafts(status="reviewed")
             report["examined"] = len(reviewed)
@@ -1246,6 +1280,12 @@ class Hippocampus:
                             self._emit("chain_ended", cluster_id=cluster_id, draft_id=d["id"])
                     report["tidy"][cluster_id] = self._close_chain(d, chain)
                     report["closed"].append(cluster_id)
+                    continue
+                if not redraft:
+                    # Not now (see redraft_due): the chain stays open and its
+                    # denied operations wait. Nothing above this line needed
+                    # the model; everything below does.
+                    report["deferred"].append(cluster_id)
                     continue
                 self._capture = []
                 failures = len(self._model_failures)
@@ -1294,7 +1334,7 @@ class Hippocampus:
         report["finished_at"] = time.time()
         self.state["last_tend"] = report
         self._remember_run("tend", report, resubmitted=len(report["resubmitted"]), ended=len(report["ended"]),
-                           closed=len(report["closed"]))
+                           closed=len(report["closed"]), deferred=len(report["deferred"]))
         self._save_state()
         return report
 

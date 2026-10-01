@@ -62,10 +62,12 @@ def create_app(config: Optional[HippocampusConfig] = None,
             h: Hippocampus = app.state.hippocampus
 
             async def tick_loop():
-                interval = cfg.sleep.tend_interval_seconds
-                print(f"[seren-hippocampus] loop active: every {interval}s tend the open chains and check "
-                      "for a brief; bedtime " + (f"daily at {cfg.sleep.at}" if cfg.sleep.at.strip()
-                                                  else f"every {cfg.sleep.interval_seconds}s") + ")")
+                interval = cfg.sleep.heartbeat_seconds()
+                print(f"[seren-hippocampus] loop active: every {interval}s close what landed and check for a "
+                      "brief; redrafts " + (f"every {cfg.sleep.tend_interval_seconds}s" if cfg.sleep.tend_cycle
+                                            else "only at sleep time (tend cycle off)")
+                      + "; bedtime " + (f"daily at {cfg.sleep.at}" if cfg.sleep.at.strip()
+                                        else f"every {cfg.sleep.interval_seconds}s"))
                 while True:
                     app.state.next_at["tick"] = time.time() + interval
                     await asyncio.sleep(interval)
@@ -143,6 +145,7 @@ def create_app(config: Optional[HippocampusConfig] = None,
         nxt = getattr(request.app.state, "next_at", {}) or {}
         return {"mode": cfg.sleep.mode, "interval_seconds": cfg.sleep.interval_seconds,
                 "tend_interval_seconds": cfg.sleep.tend_interval_seconds,
+                "tend_cycle": cfg.sleep.tend_cycle, "tick_seconds": cfg.sleep.heartbeat_seconds(),
                 "model_configured": h.model_configured,
                 "model_lifecycle": h.model.snapshot(),
                 "next_sleep_at": None,                       # no timer: the brief is the gate
