@@ -132,7 +132,8 @@ def _tend_line(rep: Optional[dict[str, Any]], now: float) -> Optional[dict[str, 
         return None
     return {"when": _when(rep.get("finished_at"), now), "ok": not rep.get("error"),
             "error": rep.get("error"), "resubmitted": len(rep.get("resubmitted") or []),
-            "closed": len(rep.get("closed") or []), "ended": len(rep.get("ended") or [])}
+            "closed": len(rep.get("closed") or []), "ended": len(rep.get("ended") or []),
+            "deferred": len(rep.get("deferred") or [])}
 
 
 def _say_sleep(rep: dict[str, Any]) -> str:
@@ -243,6 +244,7 @@ class HippocampusToolImpl:
             "bedtime": _when(due, now),
             "past_bedtime": due <= now,
             "next_tick": _when(tick, now),
+            "tend_cycle": bool(cfg.sleep.tend_cycle),
             "brief_asked_for": wanted is not None,
             "brief_asked_at": _when((wanted or {}).get("asked_at"), now),
             "brief_misses": int(h.state.get("brief_misses") or 0),
@@ -291,6 +293,11 @@ class HippocampusToolImpl:
                 parts.append(f"No brief waiting; bedtime {s['bedtime']}.")
             if s["pending_review"]:
                 parts.append(f"{s['pending_review']} draft(s) wait for your review (list_drafts on Memory).")
+            waiting = (s.get("last_tend") or {}).get("deferred") or 0
+            if waiting and not s.get("tend_cycle", True):
+                parts.append(f"{waiting} chain(s) have denied operations waiting to be redrafted: the tend cycle "
+                             "is off, so that happens at bedtime or when a brief arrives. tend_now does it now "
+                             "(it starts the small model).")
         m = s["model"]
         if m["mode"] == "mechanical":
             parts.append("No model configured: mechanical mode.")

@@ -66,12 +66,20 @@ sleep:
   # at: "03:30"            # or a wall-clock time (local HH:MM) instead of the interval
   warmup_seconds: 300      # a process that boots overdue sleeps this soon, not a whole interval later
   gap_grace_intervals: 3   # a sleep after a gap this long (x interval) drafts but does not age out or sweep
-  # The brief is the gate. Every tend_interval the hippocampus checks Memory for an open brief and
+  # The brief is the gate. Every tick the hippocampus checks Memory for an open brief and
   # sleeps on it. Past bedtime (interval_seconds / at) with none, it counts the misses:
   brief_request: true      # ...and every brief_check_misses of them asks the main model for one
   brief_check_misses: 3    #    (a near-term intent in Memory + a brief_requested event; a nudge after that)
   brief_pull: false        # headless (no main model): let the small model pull a brief from the fragments
-  tend_interval_seconds: 300
+  # The heartbeat: how often the loop turns. Cheap - it closes chains that
+  # landed and looks for a brief - and it never starts the small model.
+  tick_seconds: 300
+  # The tend cycle: redrafting what the reviewer denied, which DOES start the
+  # small model. true = every tend_interval_seconds. false = only at sleep
+  # time (bedtime passing, or a new brief), for a box where the small model
+  # and the main model share memory. tend_now by hand redrafts either way.
+  tend_cycle: true
+  tend_interval_seconds: 600
   max_entries_per_run: 500
   promote_min_evidence: 3  # short-terms a topic needs before it is proposed (hints, pins, verbatim override)
   max_attempts: 3          # drafts per chain before the last one is submitted terminal

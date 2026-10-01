@@ -49,7 +49,7 @@ the emergency.
 
 ## The loop
 
-Every few minutes (`tend_interval_seconds`) one tick runs, two steps:
+Every few minutes (`tick_seconds`) one tick runs, two steps:
 
 - **tend**: reviewed drafts with denied operations and no later attempt
   in their chain get redrafted from the critique and resubmitted; a chain
@@ -58,6 +58,16 @@ Every few minutes (`tend_interval_seconds`) one tick runs, two steps:
   review note completed, a `chain_closed` event.
 - **check**: purge what was flagged; then ask Memory for an open brief.
   One there and no chain open means **sleep now**. None means wait.
+
+**The tend cycle.** A tick is cheap: closing a landed chain and looking for a
+brief start nothing. The one part that starts the small model is the redraft.
+`sleep.tend_cycle: true` (the default) redrafts denied operations every
+`tend_interval_seconds` (600). `tend_cycle: false` leaves them until sleep
+time - bedtime passing, or a new brief arriving - so the model only comes up
+when a sleep is due: for a box where the small model and the main model share
+memory, where a redraft on a timer can take the main model down. `sleep_status`
+says when redrafts are waiting, and `tend_now` redrafts on request either way.
+Starwright: `--tend-cycle on|off`, `--tend-every SECONDS`.
 
 **The brief is the gate.** The hippocampus never drafts on its own clock. A
 sleep: group the free short-terms by topic, show the small model each
