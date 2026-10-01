@@ -44,6 +44,13 @@ import httpx
 from seren_sinew.ripple import RippleRunner, fill
 
 
+# Said first, on every default message. Seen live 30 Sept 2026: of four runs
+# woken in one evening, two wrote 'he is not in the room' and one signed its
+# letter 'reviewed with the user in the room' - nobody was. A woken run has no way
+# to know, so it is told.
+WOKEN = ("You were woken by the hippocampus, not by a person: nobody is at the keyboard or reading along, "
+         "so do not address anyone or say anyone was present. ")
+
 DEFAULT_MESSAGES = {
     "brief_requested": (
         "It's bedtime. The hippocampus wants tonight's brief before it sleeps: a summary of what mattered, "
@@ -86,7 +93,10 @@ class Ripple:
 
     def message(self, ev: dict[str, Any]) -> str:
         kind = str(ev.get("event") or "")
-        tmpl = (self._cfg.messages or {}).get(kind) or DEFAULT_MESSAGES.get(kind) or f"The hippocampus says: {kind}."
+        custom = (self._cfg.messages or {}).get(kind)
+        tmpl = custom or DEFAULT_MESSAGES.get(kind) or f"The hippocampus says: {kind}."
+        if not custom:
+            tmpl = WOKEN + tmpl                            # an operator's own wording is left as written
         return fill(tmpl, {"message": "", "event": kind, "draft_id": str(ev.get("draft_id") or "")})
 
     def fire(self, ev: dict[str, Any]) -> dict[str, Any]:

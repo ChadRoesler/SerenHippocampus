@@ -34,7 +34,11 @@ model:
   url: http://localhost:8090/v1
   name: default
   timeout_seconds: 120
-  max_tokens: 900
+  # The cap on one answer. Too low and an answer is cut off mid-operation: the
+  # operations it finished are kept and the sleep report counts it (cut_off),
+  # but the rest is lost until the next sleep. A drafting prompt is about 1,900
+  # tokens, so keep prompt + this under the context the server was started with.
+  max_tokens: 2000
   # Start the model only when a sleep or a redraft needs it, stop it after.
   # For a Nano floor or a small card: the drafting model is not loaded all day.
   lifecycle:

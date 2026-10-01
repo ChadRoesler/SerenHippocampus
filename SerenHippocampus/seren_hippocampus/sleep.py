@@ -145,10 +145,89 @@ def cluster_by_tags(shorts: list[dict[str, Any]]) -> list[tuple[str, list[dict[s
         out.append(("_untagged", untagged))
     return out
 
+
+# ── what the first sleep that ran on its own showed (30 Sept 2026) ───────────
+# 7 of 11 piles came back as nothing: every answer ran to model.max_tokens and
+# stopped mid-string, and a JSON document with no end is not JSON. The
+# operations an answer DID finish are good, so they are kept. And of the 18
+# operations that arrived, 17 were denied: one memory split into four or five
+# operations, each citing every fragment in the pile - which matters, because
+# approving an operation archives every short-term it cites.
+MAX_OPS_EXTRA = 1            # a pile yields at most its fragments + this many operations
+# An operation has to come from the fragments. With the prompt saying so, the
+# real 4B still copied an existing CORE's text into an unrelated pile as a new
+# verbatim operation (dry run, 30 Sept 2026) - approved, that is a duplicate
+# core. So: when both have enough words to judge, at least this share of an
+# operation's words must appear somewhere in the pile's fragments.
+GROUNDED_MIN = 0.3
+GROUNDED_MIN_WORDS = 6
+SOURCE_MIN_SHARE = 0.5       # a cited fragment must share at least this much of the best one's words
+
+
+def salvage_operations(text: str) -> tuple[list[dict[str, Any]], bool]:
+    """(the complete operation objects in an answer, whether it was cut off).
+    Reads the "operations" array object by object and stops at the first one
+    that does not parse - the one the token cap landed in."""
+    t = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
+    start = t.find('"operations"')
+    start = t.find("[", start) if start >= 0 else -1
+    if start < 0:
+        return [], False
+    dec = json.JSONDecoder()
+    ops: list[dict[str, Any]] = []
+    pos = start + 1
+    while True:
+        while pos < len(t) and t[pos] in " \t\r\n,":
+            pos += 1
+        if pos >= len(t):
+            return ops, True                               # ran out inside the array
+        if t[pos] == "]":
+            return ops, False
+        try:
+            obj, pos = dec.raw_decode(t, pos)
+        except ValueError:
+            return ops, True                               # the object the cap landed in
+        if isinstance(obj, dict):
+            ops.append(obj)
+
+
+def cited_fragments(text: str, idxs: list[int], entries: list[dict[str, Any]]) -> list[int]:
+    """Of the fragments an operation cites, the ones its text plausibly came
+    from: those sharing at least SOURCE_MIN_SHARE of the words the best-matching
+    fragment shares. A small model cites every fragment in the pile for every
+    operation; approving then archives fragments the operation never covered.
+    Under-citing is the safe side - a fragment left out stays in short-term
+    for a later sleep. One citation, or no words to compare, is left alone."""
+    if len(idxs) < 2:
+        return idxs
+    words = {w for w in _words(text) if len(w) >= 4 and w not in _HINT_SKIP}
+    if not words:
+        return idxs
+    share = {i: len(words & _words(entries[i].get("content") or "")) for i in idxs}
+    best = max(share.values())
+    if best == 0:
+        return idxs
+    return [i for i in idxs if share[i] >= best * SOURCE_MIN_SHARE]
+
+
+def _significant(text: str) -> set[str]:
+    return {w for w in _words(text) if len(w) >= 4 and w not in _HINT_SKIP}
+
+
+def grounded(text: str, entries: list[dict[str, Any]]) -> bool:
+    """Whether an operation's text plausibly comes from the pile's fragments:
+    at least GROUNDED_MIN of its words are in them. True when either side is
+    too short to judge - a threshold is for the clear case, not the close one."""
+    words = _significant(text)
+    pile = set().union(*[_significant(e.get("content") or "") for e in entries]) if entries else set()
+    if len(words) < GROUNDED_MIN_WORDS or len(pile) < GROUNDED_MIN_WORDS:
+        return True
+    return len(words & pile) / len(words) >= GROUNDED_MIN
+
 # Stamped on every draft with the model that wrote it (Memory's /audit groups
 # by it). Bump this when a drafting or redrafting prompt changes, so a change
 # in the numbers can be told apart from a change of model (26 Sept 2026).
-PROMPT_VERSION = "2026-09-28"                             # a wrong target moves, it is not withdrawn
+PROMPT_VERSION = "2026-09-30"                             # few operations, honest citations, no repeated restatement
 
 
 class Busy(RuntimeError):
@@ -167,6 +246,8 @@ class Hippocampus:
         self._model_failures: list[dict[str, Any]] = []
         self._withdrawn = 0                                # denied ops the redraft dropped, per tend
         self._hint_hits: dict[tuple[str, str], list[str]] = {}   # per sleep: (promote|noise, hint) -> topics
+        self._cut_off = False                              # the last parsed answer ran out of tokens
+        self._cut_offs = 0                                 # how many did, this sleep
         self._served_model = ""          # what the server said it runs, from its last answer
         # While drafting, every model call is kept here and saved as the
         # draft's replay packet (see seren_hippocampus.replay). None = off.
@@ -598,10 +679,15 @@ class Hippocampus:
             ops: list[dict[str, Any]] = []
             self._capture = []
             self._hint_hits = {}
+            self._cut_offs = 0
             for topic, entries in clusters:
                 ops += self._shifted(self._propose(topic, entries, promote_hints, noise_hints, brief), len(ops))
             ops = self._submittable(ops)
             report["operations"] = len(ops)
+            if self._cut_offs:
+                # Answers that ran out of tokens: their finished operations were
+                # kept, the rest was lost. The number that says 'raise max_tokens'.
+                report["cut_off"] = self._cut_offs
 
             # What each hint matched, said out loud. A brief whose promote hints
             # matched nothing used to be consumed as 'ok, 0 operations' - the
@@ -947,8 +1033,14 @@ class Hippocampus:
             "verbatim = only when the exact wording is the point. Use core ids exactly as given and never "
             "invent one. To attach to (or supersede) a new_core you propose in this same answer, give "
             '"target_op": <that new_core\'s position in your list, from 0> instead of target_core_id. '
-            "Every operation lists the fragment indexes it is built from. Fewer, better "
-            "operations beat many. Weigh the steer when there is one: it says what mattered, which the "
+            "source_indexes lists ONLY the fragments that operation's text actually comes from, not "
+            "every fragment shown: a fragment is archived when its operation is approved, so citing one "
+            "the operation does not cover loses it. One operation for each separate memory the "
+            "fragments hold, never more operations than fragments, and none for a fragment an existing "
+            "core already covers: a memory is one operation, not one per sentence. Say only what the "
+            "fragments say - nothing from the cores or the card that the fragments do not. Leave restated_content out unless "
+            "the core's own wording must change, and never repeat content in it. Keep each rationale to "
+            "one short sentence. Weigh the steer when there is one: it says what mattered, which the "
             "fragments alone cannot."
             f"{steer_block}\n\n"
             f"Topic: {topic or 'untagged'}\n\nFragments:\n{frag_lines}\n\nExisting cores:\n{core_lines}\n\nJSON:")
@@ -969,20 +1061,39 @@ class Hippocampus:
         call.update(answer=raw, seconds=round(time.time() - t0, 2))
         ops = self._parse_draft(raw, topic, entries, candidates)
         call["ops"] = ops or []
+        cut = self._cut_off
+        cap = self._cfg.model.max_tokens
+        if cut:
+            call["cut_off"] = True
+            self._cut_offs += 1
         if ops is None:
-            call["error"] = "not the JSON asked for"
-            self._model_failure("draft", topic, "the model's answer was not the JSON asked for: "
-                                + repr((raw or "")[:160]))
+            # Say WHICH failure: 'not the JSON asked for' sent the first reader
+            # looking for a formatting bug when the answer had simply run out
+            # of tokens (seven piles on 30 Sept 2026).
+            call["error"] = "cut off at max_tokens" if cut else "not the JSON asked for"
+            self._model_failure("draft", topic, (
+                f"the answer was cut off before one operation was complete: model.max_tokens ({cap}) "
+                f"is too low for this model" if cut else
+                "the model's answer was not the JSON asked for: " + repr((raw or "")[:160])))
             return []
+        if cut:
+            self._log(f"{topic or 'untagged'}: the answer was cut off at model.max_tokens ({cap}); "
+                      f"kept its {len(ops)} complete operation(s)")
         return ops
 
     def _parse_draft(self, raw: str, topic: Optional[str], entries: list[dict[str, Any]],
                      candidates: list[dict[str, Any]]) -> Optional[list[dict[str, Any]]]:
         """A drafting answer, parsed and validated: None when it is not the
-        JSON asked for. The sleep and a replay both come through here."""
+        JSON asked for. The sleep and a replay both come through here. An
+        answer cut off at the token cap keeps the operations it finished
+        (self._cut_off says it happened)."""
+        self._cut_off = False
         parsed = self._json_from(raw)
         if not isinstance(parsed, dict):
-            return None
+            ops, self._cut_off = salvage_operations(raw)
+            if not ops:
+                return None
+            return self._validate_ops(ops, topic, entries, candidates)
         return self._validate_ops(parsed.get("operations"), topic, entries, candidates)
 
     def _validate_ops(self, raw_ops: Any, topic: Optional[str], entries: list[dict[str, Any]],
@@ -1027,17 +1138,42 @@ class Hippocampus:
                 target = None
             if kind != "attach" and not content:
                 continue
+            restated = str(raw.get("restated_content") or "").strip() if kind == "attach" else ""
+            # The episode summary repeated as the core's new wording: approving
+            # it would REPLACE the core's text with the episode. It is not a
+            # restatement, so it goes.
+            if restated == content:
+                restated = ""
+            if not grounded(f"{content} {restated}", entries):
+                self._log(f"{topic or 'untagged'}: dropped a {kind} whose text is not in the fragments "
+                          f"(copied from a core or the card?): {content[:90]!r}")
+                continue
+            if kind != "verbatim":
+                idxs = cited_fragments(f"{content} {restated}", sorted(set(idxs)), entries)
             op = {"kind": kind, "content": content, "topic": topic, "target_core_id": target,
                   "source_short_ids": [entries[i]["id"] for i in sorted(set(idxs))],
                   "evidence_count": len(set(idxs)),
                   "rationale": str(raw.get("rationale") or "")[:500] or None}
-            if kind == "attach" and raw.get("restated_content"):
-                op["restated_content"] = str(raw["restated_content"]).strip()
+            if restated:
+                op["restated_content"] = restated
             kept.append((pos, op, target_op))
         # new_cores that survived, by answer position; an op on one that did
         # not (or on itself, or on anything but a new_core) goes
         cores_at = {pos for pos, op, _ in kept if op["kind"] == "new_core"}
         kept = [(pos, op, t) for pos, op, t in kept if t is None or (t in cores_at and t != pos)]
+        # One memory is one operation. A pile that came back with more than its
+        # fragments (plus one) is cut to the first ones. No number is named in
+        # the prompt: 'at most three' made a 4B write exactly three, every
+        # time (dry run on the real model, 30 Sept 2026). AFTER the invalid
+        # ones are gone, so junk does not use up the room; an op on a new_core
+        # that was cut then goes with it.
+        cap = len(entries) + MAX_OPS_EXTRA
+        if len(kept) > cap:
+            self._log(f"{topic or 'untagged'}: {len(kept)} operations from {len(entries)} fragment(s); "
+                      f"keeping the first {cap}")
+            kept = kept[:cap]
+            cores_at = {pos for pos, op, _ in kept if op["kind"] == "new_core"}
+            kept = [(pos, op, t) for pos, op, t in kept if t is None or t in cores_at]
         final = {pos: i for i, (pos, _, _) in enumerate(kept)}
         out: list[dict[str, Any]] = []
         for _, op, t in kept:
