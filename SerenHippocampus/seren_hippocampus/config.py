@@ -105,7 +105,11 @@ class ModelConfig(BaseModel):
     url: str = "http://localhost:8090/v1"
     name: str = "default"
     timeout_seconds: int = 120
-    max_tokens: int = 900
+    # The cap on one answer. It was 900 until the first sleep that ran on its
+    # own (30 Sept 2026): seven of eleven answers ran into it mid-string and
+    # were lost whole. A drafting prompt is about 1,900 tokens, so 2000 here
+    # still fits a 4096-token context; raise it with the context you serve.
+    max_tokens: int = 2000
     # Merged into every chat request. The default turns OFF the "thinking"
     # of Qwen3-style models (llama.cpp and vLLM honour chat_template_kwargs;
     # servers that do not know it ignore it). Seen live 25 Sept 2026: a 2B
@@ -323,6 +327,54 @@ def _block(model: type[BaseModel], raw: Any, name: str) -> BaseModel:
         return model()
 
 
+def _setting_paths(model: type[BaseModel], where: str = "") -> dict[str, list[str]]:
+    """Every setting name -> the blocks that have it, for 'did you mean'."""
+    out: dict[str, list[str]] = {}
+    for name, f in model.model_fields.items():
+        here = f"{where}.{name}" if where else name
+        ann = f.annotation
+        if isinstance(ann, type) and issubclass(ann, BaseModel):
+            for k, v in _setting_paths(ann, here).items():
+                out.setdefault(k, []).extend(v)
+        else:
+            out.setdefault(name, []).append(here)
+    return out
+
+
+def _unknown_settings(model: type[BaseModel], raw: Any, where: str = "") -> list[tuple[str, str]]:
+    """(path, key) for every key in the yaml that the config does not have."""
+    out: list[tuple[str, str]] = []
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        f = model.model_fields.get(str(k))
+        here = f"{where}.{k}" if where else str(k)
+        if f is None:
+            out.append((where, str(k)))
+            continue
+        ann = f.annotation
+        if isinstance(ann, type) and issubclass(ann, BaseModel):
+            out += _unknown_settings(ann, v, here)
+    return out
+
+
+def warn_unknown_settings(data: Any) -> list[str]:
+    """One line per yaml key this config does not have, with where it likely
+    belongs. Such a key used to be dropped without a word: on 30 Sept 2026 a
+    max_tokens typed one indent too deep sat under model.lifecycle, the service
+    kept its old cap, and nothing said so. Returns the lines (also printed)."""
+    known = _setting_paths(HippocampusConfig)
+    lines = []
+    for where, key in _unknown_settings(HippocampusConfig, data):
+        at = f"{where}.{key}" if where else key
+        homes = [p for p in known.get(key, []) if p != at]
+        hint = f" - did you mean {' or '.join(homes)}?" if homes else ""
+        lines.append(f"[seren-hippocampus] config: '{at}' is not a setting and was ignored{hint}")
+    for line in lines:
+        print(line)
+    return lines
+
+
 def load_config(explicit_path: Optional[str] = None) -> HippocampusConfig:
     path = _resolve_config_path(explicit_path)
     data: dict[str, Any] = {}
@@ -332,6 +384,7 @@ def load_config(explicit_path: Optional[str] = None) -> HippocampusConfig:
         except Exception as e:  # noqa: BLE001
             print(f"[seren-hippocampus] config: failed to read {path}: {e} (using defaults)")
             data = {}
+    warn_unknown_settings(data)
     cfg = HippocampusConfig(
         server=_server_block(data.get("server")),
         memory=_memory_block(data.get("memory")),

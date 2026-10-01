@@ -147,6 +147,20 @@ Naming both turns management on. A missing file fails the sleep with its path
 in the error. A hand-written `start` line still works and wins over the two.
 Starwright: `--model-server` / `--model-path` / `--model-args`.
 
+**The answer cap.** `model.max_tokens` (2000 by default; Starwright:
+`--model-max-tokens`) is how long one answer may be. An answer that runs into
+it is cut off mid-operation: the operations it finished are kept, the sleep
+report counts it as `cut_off`, and an answer cut off before one operation was
+complete is a model failure that names the cap. Keep the prompt (about 1,900
+tokens) plus this under the context the server was started with. The first
+sleep that ran on its own, on 30 Sept 2026, lost seven of eleven answers to a
+900-token cap, reported as "not the JSON asked for".
+
+**A setting in the wrong place is named.** A yaml key the config does not
+have is ignored, and the service says so at start, with where it likely
+belongs: `'model.lifecycle.max_tokens' is not a setting and was ignored - did
+you mean model.max_tokens?`
+
 A configured model that cannot be reached is a failed sleep that keeps its
 brief for the next check - never a mechanical copy of the fragments. After a
 failed start the next attempt waits `retry_after_seconds`. `/status` carries

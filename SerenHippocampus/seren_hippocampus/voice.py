@@ -86,9 +86,17 @@ class VoiceCard:
         cur = self.current()
         if not cur:
             return ""
-        return ("These memories belong to someone, and they wrote this about themselves. Write every "
-                "operation the way they would: their voice, their pronouns, and whose experience it is "
-                "(someone else's dream or story stays theirs).\n"
+        # Scoped on purpose. The first wording was 'write every operation the
+        # way they would', and a 4B did: a note about how the hippocampus works
+        # became 'I check for a brief', another person's work became 'I helped
+        # build', and a phrase the card quoted as an example was pasted onto
+        # unrelated memories (dry run on the real model, 30 Sept 2026).
+        return ("These memories belong to someone, and they wrote the card below about themselves. "
+                "It applies ONLY where a fragment is about them - what they did, said, felt, or what "
+                "happened to them: write that in their voice and with their pronouns. A fragment about "
+                "anything else (a system, a design, another person's actions or story) is written "
+                "plainly about that thing and never as 'I'. The card says HOW to write, never what: "
+                "nothing in it is a fact to add, and none of its sentences or phrases go into a memory.\n"
                 f"--- their card ---\n{cur['text']}\n--- end of card ---\n\n")
 
     # -- write -----------------------------------------------------------
