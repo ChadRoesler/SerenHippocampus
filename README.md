@@ -49,6 +49,19 @@ the emergency.
 
 ## The loop
 
+The whole cycle, end to end:
+
+    a sleep starts            bedtime passes, or someone starts one by hand
+    the hippocampus asks      "write me a brief?"              (the ripple)
+    the main model answers    submit_brief, then nudge         "your turn"
+    the hippocampus drafts    one draft, many operations
+    the main model reviews    approve or deny each, then nudge
+    denied ones are redrafted from the critique, up to max_attempts
+    the last attempt          the reviewer takes the best version of each,
+                              edits as needed, and approves
+    it lands                  written to long-term; near- and short-term age out;
+                              the brief is consumed; the small model stops
+
 Every few minutes (`tick_seconds`) one tick runs, two steps:
 
 - **tend**: reviewed drafts with denied operations and no later attempt
@@ -69,6 +82,18 @@ memory, where a redraft on a timer can take the main model down. `sleep_status`
 says when redrafts are waiting, and `tend_now` redrafts on request either way.
 Starwright: `--tend-cycle on|off`, `--tend-every SECONDS`.
 
+**The nudge.** The tick is the safety net; the nudge is how the cycle
+actually moves. The hippocampus can wake the main model (the ripple, below),
+and the main model's last act after a brief or a review is `nudge` (the MCP
+tool, or `POST /nudge`): "your turn". It returns at once and the hippocampus
+runs a tick now - sleeps on the brief, redrafts what was denied (whatever the
+tend cycle or its interval say), closes what landed. Without it a chain with
+five minutes of work in it took twenty-five, waiting on timers. A nudged tick
+first waits for the session that sent it to end (`sleep.nudge_wait_seconds`,
+180; it is never killed for being slow), because the next wake-up must not
+land on top of it. With `tend_cycle: false` and the nudge, a small box
+finishes a whole chain without a single redraft on a timer.
+
 **The brief is the gate.** The hippocampus never drafts on its own clock. A
 sleep: group the free short-terms by topic, show the small model each
 cluster with the nearest existing cores and the brief as the steer, submit
@@ -78,7 +103,25 @@ draft already holds are left alone. One chain at a time: a brief that
 arrives while a draft is under review waits its turn.
 
 `sleep.mode: thread` runs the tick here; `external` means something else
-POSTs `/tend` and `/check` (or `/sleep` by hand).
+POSTs `/tend` and `/check` (or `/sleep` by hand), and a `/nudge` runs one
+tick itself.
+
+**A sleep started by hand asks first.** `POST /sleep` (the viewer's button,
+the `sleep_now` tool) with no brief waiting does not draft blind: it asks for
+a brief - the same request bedtime makes - answers `asked_for_brief: true`,
+records no sleep, and sleeps on the brief when it arrives.
+`POST /sleep?without_brief=true` (`sleep_now(without_brief=true)`) drafts
+unsteered, now. Where `brief_request` is off there is nobody to ask, and it
+sleeps as before.
+
+**The last attempt.** Attempt `max_attempts` goes out `terminal: true`, and
+its wake-up message says so: nothing comes back after it, so the reviewer
+lands each operation - approves it, or approves it with their own fixes -
+and denies only what should not be in memory at all. A redraft names the
+operation it replaces (`redraft_of`), which is how Memory shows the reviewer
+every earlier version beside its critique. A redraft never rewords a core
+(`restated_content`): it sees only the start of each one, so what it attaches
+lands as a satellite and the core keeps its words.
 
 ### When the sleep fires
 
@@ -138,8 +181,21 @@ not hold VRAM the rest of the day, on a Nano floor or on a 4 GB card. With
 or a redraft needs it (a `start` command line, or the node's Observatory for a
 registered service), waits for its health check, keeps it warm for
 `keep_warm_seconds` after the last call, and stops it on the next tick after
-that. It never stops a server it did not start: one that already answered was
-started by someone else.
+that - or at once, as soon as no chain is open: the cycle is over and nothing
+will call it before the next sleep. It never stops a server it did not start:
+one that already answered was started by someone else.
+
+**The hand-over: one model in memory at a time.** On a box that cannot hold
+the small model and the main model together, keeping the small one warm while
+the main one reviews is how a review runs out of memory. With
+`model.lifecycle.handover: true` (Starwright: `--model-handover`) the
+hippocampus stops its model *before* it pokes the main model - when a draft
+or a redraft is ready - and the next redraft starts it again. Off (the
+default) keeps it warm between a review and a redraft, which is quicker where
+there is room for both. On a cluster this is the hippocampus's half of the
+baton: the Observatory stops the main model's server once the brief is in and
+nudges the hippocampus; the hippocampus drafts, stops its own model, and
+ripples back.
 
 The easy way to set it up is to name the server and the model file, and let
 the hippocampus build the command line itself:
@@ -209,7 +265,8 @@ Seren service.
 | `GET /`        | service, version, mode, whether a model is configured |
 | `GET /health`  | liveness, and whether Memory answers                  |
 | `GET /status`  | last sleep and last tend, intervals                   |
-| `POST /sleep`  | sleep now by hand, on the open brief if any (409 if busy) |
+| `POST /sleep`  | sleep now by hand, on the open brief; with none waiting it asks for one (`?without_brief=true` drafts unsteered). 409 if busy |
+| `POST /nudge`  | "your turn": run a tick now instead of at the next interval; returns at once |
 | `POST /tend`   | pick up denied operations now; cull chains that landed |
 | `POST /check`  | check for a brief now; sleep on it if there is one    |
 | `GET /queue`   | what is waiting for review, read from Memory          |
@@ -231,7 +288,8 @@ the same bearer as every other route:
 | tool            | what                                                                    |
 |-----------------|-------------------------------------------------------------------------|
 | `sleep_status`  | where it stands in one call: last sleep and tend, bedtime, a brief waiting, a chain open, drafts to review, the model up or down - and a sentence saying so |
-| `sleep_now`     | sleep now on the open brief. The loop sleeps by itself when a brief is open; this is for not waiting for the tick |
+| `sleep_now`     | sleep now on the open brief; with none waiting it asks for one (`without_brief=true` drafts unsteered) |
+| `nudge`         | "your turn": the last thing to call after `submit_brief` or `review_draft`. Returns at once; the hippocampus carries on now |
 | `tend_now`      | redraft what was just denied, cull chains that landed, now instead of next tick |
 | `check_now`     | one tick by hand: purge, then sleep only if the gate is really open      |
 | `sleep_history` | the last runs, newest first                                             |
@@ -253,7 +311,8 @@ started. `SEREN_HIPPOCAMPUS_MCP_MOUNT` moves the endpoint;
 
 Every sleep and tend leaves **events**: `draft_submitted` (with the draft
 id and its operation count), `sleep_failed`, `sleep_done`, `purged` (ids,
-never content), `tend_resubmitted`, `chain_ended`, `catch_up`. They are kept
+never content), `restored` (cores Memory put back to their earlier wording),
+`tend_resubmitted`, `chain_ended`, `nudged`, `catch_up`. They are kept
 on the service (`GET /events`, the History tab) whatever else is configured.
 
 With `notify.webhook_url` set, each event in `notify.events` is POSTed as
@@ -272,13 +331,21 @@ Named for the sharp-wave ripples a sleeping hippocampus fires to reach the
 cortex. The woken model answers with its Memory tools (`submit_brief`,
 `get_draft`, `review_draft`), so the cycle runs on its own:
 
-    hippocampus: "it's bedtime - want to write a brief?"   -> the model writes one
-    hippocampus: "I drafted tonight's memories - review?"  -> approve, or deny with a critique
+    hippocampus: "it's bedtime - want to write a brief?"   -> the model writes one, and nudges
+    hippocampus: "I drafted tonight's memories - review?"  -> approve, or deny with a critique; nudge
     hippocampus: "redrafted what you denied - again?"      -> ...until it lands
+    hippocampus: "this is the last attempt"                -> take the best, edit, approve
 
-It fires on `brief_requested`, `draft_submitted` and `tend_resubmitted`
-(`ripple.events`), one at a time per event, and each event records what the
-ripple did.
+It fires on `brief_requested`, `draft_submitted`, `tend_resubmitted` and
+`brief_unmatched` (`ripple.events`), one at a time per event, and each event
+records what the ripple did. A ripple that could not start because the last
+one for that event was still running is fired again on the next tick.
+
+Every default message opens by saying nobody is at the keyboard, and ends by
+asking for the nudge. The review messages name the safe verdict for an attach
+that would reword its core (`"restate": false`). The last attempt has its own
+wording; `ripple.messages` takes `tend_resubmitted_terminal` if you write
+your own.
 
 **Where the model lives decides the route.** Pick the first one that fits:
 

@@ -36,7 +36,7 @@ def test_no_mcp_means_http_only_not_a_dead_service(memory, bridge, hcfg, monkeyp
         assert "/mcp" not in [getattr(r, "path", None) for r in app.routes]
         assert tc.get("/health").json()["ok"] is True
         short(memory, "a", "t"); short(memory, "b", "t")
-        assert tc.post("/sleep").json()["operations"] == 1, "the sleep runs without the MCP surface"
+        assert tc.post("/sleep?without_brief=true").json()["operations"] == 1, "the sleep runs without the MCP surface"
     client.close()
     out = capsys.readouterr().out
     assert ("HTTP-only mode" in out) if isinstance(exc, ImportError) else ("MCP mount failed" in out)

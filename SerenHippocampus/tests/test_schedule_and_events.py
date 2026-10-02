@@ -236,7 +236,7 @@ def test_the_app_serves_events_and_status_says_what_the_next_sleep_will_be(memor
         assert st["catch_up_next"] is True and st["sleep_at"] == "03:30" and st["webhook"] is False
         assert tc.get("/events").json() == {"count": 0, "webhook": False, "entries": []}
         short(memory, "a", "t"); short(memory, "b", "t")
-        tc.post("/sleep")
+        tc.post("/sleep?without_brief=true")
         ev = tc.get("/events").json()
         assert ev["count"] >= 2 and ev["entries"][0]["event"] == "sleep_done", "newest first"
         assert any(e["event"] == "draft_submitted" for e in ev["entries"])

@@ -58,6 +58,31 @@ def create_app(config: Optional[HippocampusConfig] = None,
         )
         tasks: list[asyncio.Task] = []
         app.state.next_at: dict[str, Optional[float]] = {"sleep": None, "tend": None}
+        # The nudge: 'your turn' from the main model (or, on a cluster, from the
+        # Observatory). It ends the wait for the next tick.
+        loop = asyncio.get_running_loop()
+        wake = asyncio.Event()
+        h0: Hippocampus = app.state.hippocampus
+
+        async def nudged_tick():
+            # The session that nudged is usually still alive, finishing its
+            # answer. Wait for it to leave first: a ripple for the same event
+            # is one at a time, so the next wake-up would be skipped while it
+            # runs - and on a small box the main model must be out of memory
+            # before the small one starts.
+            await asyncio.to_thread(h0.ripple.settle, float(cfg.sleep.nudge_wait_seconds))
+            try:
+                await asyncio.to_thread(h0.tick)
+            except Busy:
+                pass
+            except Exception as e:  # noqa: BLE001
+                print(f"[seren-hippocampus] tick error: {e}")
+
+        if cfg.sleep.mode == "thread":
+            h0._wake = lambda: loop.call_soon_threadsafe(wake.set)
+        else:
+            # external mode: nothing ticks, so a nudge runs one turn itself
+            h0._wake = lambda: loop.call_soon_threadsafe(lambda: tasks.append(asyncio.create_task(nudged_tick())))
         if cfg.sleep.mode == "thread":
             h: Hippocampus = app.state.hippocampus
 
@@ -70,7 +95,14 @@ def create_app(config: Optional[HippocampusConfig] = None,
                                         else f"every {cfg.sleep.interval_seconds}s"))
                 while True:
                     app.state.next_at["tick"] = time.time() + interval
-                    await asyncio.sleep(interval)
+                    try:
+                        await asyncio.wait_for(wake.wait(), timeout=interval)
+                    except asyncio.TimeoutError:
+                        pass
+                    if wake.is_set():
+                        wake.clear()
+                        await nudged_tick()
+                        continue
                     try:
                         await asyncio.to_thread(h.tick)
                     except Busy:
@@ -170,6 +202,16 @@ def create_app(config: Optional[HippocampusConfig] = None,
             return await asyncio.to_thread(h.check)
         except Busy as e:
             raise HTTPException(409, str(e))
+
+    @app.post("/nudge")
+    async def nudge(request: Request):
+        """'Your turn.' Returns at once; the hippocampus runs a turn of its
+        loop now - sleeps on a waiting brief, redrafts what was denied,
+        closes what landed - instead of at the next tick. Sent by the main
+        model after a brief or a review, or by an Observatory once the main
+        model's server is out of the way."""
+        h: Hippocampus = request.app.state.hippocampus
+        return h.nudge()
 
     @app.get("/events")
     async def events(request: Request):
@@ -284,10 +326,13 @@ def create_app(config: Optional[HippocampusConfig] = None,
         return HTMLResponse(html)
 
     @app.post("/sleep")
-    async def sleep_now(request: Request):
+    async def sleep_now(request: Request, without_brief: bool = False):
+        """Start a sleep by hand. With no brief waiting it asks for one
+        (asked_for_brief: true) and the check sleeps on it when it arrives;
+        ?without_brief=true drafts unsteered, now."""
         h: Hippocampus = request.app.state.hippocampus
         try:
-            return await asyncio.to_thread(h.sleep)
+            return await asyncio.to_thread(h.sleep, not without_brief)
         except Busy as e:
             raise HTTPException(409, str(e))
 

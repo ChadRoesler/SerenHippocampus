@@ -51,6 +51,17 @@ from seren_sinew.ripple import RippleRunner, fill
 WOKEN = ("You were woken by the hippocampus, not by a person: nobody is at the keyboard or reading along, "
          "so do not address anyone or say anyone was present. ")
 
+# Said last, on every default message: the wire back. The hippocampus could
+# wake the model; the model could only wait for the hippocampus's timer.
+NUDGE = (" When you have finished - as the last thing you do - call nudge on the hippocampus's own server, "
+         "so it carries on at once instead of at its next tick.")
+
+# Said on every review. 1 Oct 2026: an attach arrived with the episode's own
+# text as restated_content, was approved, and replaced the core's wording.
+# Memory refuses that now; the reviewer is told the safe verdict.
+RESTATE = (" An attach that carries restated_content would REPLACE its core's wording: approve those with "
+           "\"restate\": false unless restated_content is the whole core said again with the new detail in it.")
+
 DEFAULT_MESSAGES = {
     "brief_requested": (
         "It's bedtime. The hippocampus wants tonight's brief before it sleeps: a summary of what mattered, "
@@ -60,10 +71,25 @@ DEFAULT_MESSAGES = {
     "draft_submitted": (
         "The hippocampus drafted long-term memories from tonight's sleep (draft {draft_id}). Review them "
         "on your memory server: get_draft, then review_draft with a verdict per operation and a specific "
-        "critique for anything you deny."),
+        "critique for anything you deny." + RESTATE),
     "tend_resubmitted": (
-        "The hippocampus redrafted operations you denied. Review the new attempt on your memory server: "
-        "list_drafts, get_draft, then review_draft."),
+        "The hippocampus redrafted operations you denied (draft {draft_id}). Review the new attempt on your "
+        "memory server: get_draft, then review_draft. earlier_attempts on each operation shows what it "
+        "replaced and the critique that sent it back." + RESTATE),
+    # The same event, when the redraft is the last permitted attempt (the
+    # event carries terminal: true). the user's map of the cycle, 1 Oct 2026: 'when
+    # max is reached you take the best of the bunch, edit as needed and approve
+    # it.' That morning a woken reviewer denied five operations on a last
+    # attempt and the chain ended with them dropped.
+    "tend_resubmitted_terminal": (
+        "The hippocampus redrafted operations you denied, and this is the LAST attempt (draft {draft_id}): "
+        "nothing comes back after it. An operation you deny now is dropped and its memory stays in "
+        "short-term. So this review is where you land things. get_draft on your memory server shows each "
+        "operation, the core it would change (target_core), and earlier_attempts with your critiques. For "
+        "each one take the best version there is, fix what is still wrong yourself, and approve it with "
+        "review_draft: edited_content for the text, edited_kind and edited_target_core_id when it is the "
+        "wrong kind of operation or aimed at the wrong core. Deny only what should not be in memory at all "
+        "- a duplicate, something untrue - and say why." + RESTATE),
     "brief_unmatched": (
         "The hippocampus slept on your brief, but none of its promote_hints matched a memory, so it kept "
         "nothing. The brief is set aside, not used up. Write a new one with submit_brief: hints that are "
@@ -94,9 +120,18 @@ class Ripple:
     def message(self, ev: dict[str, Any]) -> str:
         kind = str(ev.get("event") or "")
         custom = (self._cfg.messages or {}).get(kind)
-        tmpl = custom or DEFAULT_MESSAGES.get(kind) or f"The hippocampus says: {kind}."
+        if kind == "tend_resubmitted" and ev.get("terminal"):
+            # the last attempt has its own wording; an operator's message for
+            # it wins, then their message for any resubmit, then ours
+            custom = (self._cfg.messages or {}).get("tend_resubmitted_terminal") or custom
+            kind_default = DEFAULT_MESSAGES["tend_resubmitted_terminal"]
+        else:
+            kind_default = DEFAULT_MESSAGES.get(kind)
+        tmpl = custom or kind_default or f"The hippocampus says: {kind}."
         if not custom:
             tmpl = WOKEN + tmpl                            # an operator's own wording is left as written
+            if kind in DEFAULT_MESSAGES:
+                tmpl += NUDGE
         return fill(tmpl, {"message": "", "event": kind, "draft_id": str(ev.get("draft_id") or "")})
 
     def fire(self, ev: dict[str, Any]) -> dict[str, Any]:
@@ -154,5 +189,21 @@ class Ripple:
         return {"type": "script", **answer}
 
     def wait(self, timeout: float = 30.0) -> None:
-        """Tests and shutdown: wait for ripples still running."""
+        """Tests and shutdown: wait for ripples still running. KILLS what is
+        still running at the timeout - never for a live session; see settle."""
         self._runner.wait(timeout)
+
+    def settle(self, timeout: float = 180.0, poll: float = 1.0) -> bool:
+        """Wait, without touching them, until no woken session is still
+        running; True when the room is empty. A nudge waits on this: the
+        session that sent it is alive for a moment longer, and it is never
+        killed for being slow (wait() would)."""
+        import time
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            procs = list(getattr(self._runner, "_running", {}).values())
+            if all(p.poll() is not None for p in procs):
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(poll)

@@ -116,7 +116,7 @@ def test_the_routes(memory, bridge, hcfg, candidate):
         h = app.state.hippocampus
         h._call_model = lambda prompt, max_tokens=None: _two_step_model(prompt)
         short(memory, "a", "t"); short(memory, "b", "t")
-        did = tc.post("/sleep").json()["draft_id"]
+        did = tc.post("/sleep?without_brief=true").json()["draft_id"]
         assert did and tc.get("/replays").json()["entries"][0]["draft_id"] == did
         r = tc.post("/replay", json={"draft_id": did, "url": candidate})
         assert r.status_code == 200 and r.json()["candidate"]["checks"]["valid"] == 1

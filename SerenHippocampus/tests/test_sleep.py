@@ -250,7 +250,7 @@ def test_app_runs_a_sleep_and_refuses_a_second_at_once(memory, bridge, hcfg):
         assert tc.get("/health").json() == {"ok": True, "memory_reachable": True}
         assert tc.get("/").json()["model"] == "mechanical"
         short(memory, "a", "t"); short(memory, "b", "t")
-        r = tc.post("/sleep")
+        r = tc.post("/sleep?without_brief=true")
         assert r.status_code == 200 and r.json()["operations"] == 1
         st = tc.get("/status").json()
         assert st["last_sleep"]["draft_id"] and st["mode"] == "external"
@@ -280,7 +280,7 @@ def test_viewer_queue_and_history_serve_the_window(memory, bridge, hcfg):
         assert "Hippocampus" in page.text and "Waiting for review" in page.text and "#c9a0dc" in page.text
         assert tc.get("/queue").json() == {"count": 0, "drafts": []}
         short(memory, "a", "t"); short(memory, "b", "t")
-        tc.post("/sleep"); tc.post("/tend")
+        tc.post("/sleep?without_brief=true"); tc.post("/tend")
         q = tc.get("/queue").json()
         assert q["count"] == 1 and q["drafts"][0]["operations"][0]["status"] == "pending"
         h = tc.get("/history").json()
@@ -312,6 +312,6 @@ def test_queue_reports_an_unreachable_memory_instead_of_failing(hcfg):
         au = tc.get("/audit").json()
         assert au["chains"] == [] and "refused" in au["error"], "the audit says Memory is down, never a 500"
         assert tc.get("/health").json()["memory_reachable"] is False
-        r = tc.post("/sleep").json()
+        r = tc.post("/sleep?without_brief=true").json()
         assert r["error"] and "refused" in r["error"], "a sleep against a dead Memory records why it stopped"
     client.close()

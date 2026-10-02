@@ -20,6 +20,7 @@ TOOL ROSTER:
     sleep_now       run a sleep now on the open brief         (POST /sleep)
     tend_now        redraft denied operations, cull chains    (POST /tend)
     check_now       one tick of the loop by hand              (POST /check)
+    nudge           'your turn': carry on now, do not wait    (POST /nudge)
     sleep_history   the last runs, newest first               (GET  /history)
     audit_sleeps    per-model numbers + the last few chains   (GET  /audit, trimmed)
     replay_draft    a draft's prompts on a candidate model    (POST /replay, trimmed)
@@ -63,6 +64,7 @@ TOOL_NAMES: tuple[str, ...] = (
     "sleep_now",
     "tend_now",
     "check_now",
+    "nudge",
     "sleep_history",
     "audit_sleeps",
     "replay_draft",
@@ -306,7 +308,7 @@ class HippocampusToolImpl:
         return " ".join(parts)
 
     # -- act: the three things the loop does, by hand -----------------------
-    async def sleep_now(self) -> dict:
+    async def sleep_now(self, without_brief: bool = False) -> dict:
         """Run a sleep NOW, on the open brief if there is one.
 
         You rarely need this. The loop sleeps by itself: every tick (a few
@@ -316,8 +318,11 @@ class HippocampusToolImpl:
         you do not want to wait for that tick, or to sleep in `external` mode
         where nothing ticks.
 
-        Without an open brief it sleeps unsteered - fine by hand, but the brief
-        is what tells it which bits matter, so write one first if you can.
+        Without an open brief it does NOT draft blind: it asks for a brief
+        (asked_for_brief: true - the same request bedtime makes) and sleeps on
+        it at the next check after you submit_brief. The brief is what tells
+        it which bits matter. without_brief=true skips the ask and sleeps
+        unsteered now.
         One cycle at a time: while a draft is still under review or waiting
         for its redraft, this refuses (refused: true) and nothing starts -
         finish the review and let tend land the chain first.
@@ -329,11 +334,17 @@ class HippocampusToolImpl:
         a sleep or tend is already running, nothing starts and you get
         busy: true.
         """
-        rep = await self._run(self.h.sleep, "slept")
+        rep = await self._run(lambda: self.h.sleep(ask_for_brief=not without_brief), "slept")
         if rep is None:
             return {"ok": False, "busy": True, "message": BUSY}
         if rep.get("memory_reachable") is False:
             return rep
+        if rep.get("asked_for_brief"):
+            return {"ok": True, "asked_for_brief": True, "refused": False,
+                    "message": "No brief is waiting, so nothing was drafted: the hippocampus asked for one. "
+                               "submit_brief on Memory, then nudge (or wait for the next tick) and it "
+                               "sleeps on it. sleep_now(without_brief=true) sleeps unsteered instead.",
+                    "report": rep}
         return {"ok": not rep.get("error") and not rep.get("refused"), "refused": bool(rep.get("refused")),
                 "message": _say_sleep(rep), "report": rep}
 
@@ -345,7 +356,9 @@ class HippocampusToolImpl:
         want the redrafts back in this session instead of in a few minutes.
         For each reviewed draft: denied operations are redrafted from your
         critique and resubmitted as the next attempt (the last permitted
-        attempt goes out terminal, which is when you may edit on approve); a
+        attempt goes out terminal - that review is where you take the best
+        version of each operation, edit as needed and approve, because a
+        denial there drops it); a
         chain whose every verdict is in is closed and its brief consumed.
 
         Costs: one model call per denied operation (none if nothing was
@@ -358,6 +371,20 @@ class HippocampusToolImpl:
         if rep.get("memory_reachable") is False:
             return rep
         return {"ok": not rep.get("error"), "message": _say_tend(rep), "report": rep}
+
+    async def nudge(self) -> dict:
+        """'Your turn.' Tell the hippocampus to carry on NOW instead of at
+        its next tick. Call it as the LAST thing you do after submit_brief,
+        or after review_draft - it then sleeps on the brief, redrafts what
+        you denied, or closes the chain that landed, straight away.
+
+        Returns at once and costs nothing: the work happens on the
+        hippocampus's own loop after you have gone (it waits for a woken
+        session to end first, so the next wake-up is not skipped). Unlike
+        tend_now and check_now it does not block and hands you no report;
+        use those when you are staying in the session and want the result.
+        """
+        return self.h.nudge()
 
     async def check_now(self) -> dict:
         """One check of the loop, by hand: purge what was flagged, then look
