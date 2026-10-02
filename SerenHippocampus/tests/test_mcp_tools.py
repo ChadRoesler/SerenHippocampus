@@ -108,7 +108,7 @@ async def test_sleep_now_runs_a_sleep_on_the_open_brief(memory, make_hippo):
     h = make_hippo()
     short(memory, "a", "t"); short(memory, "b", "t")
     bid = _brief(memory)
-    r = await _tools(h).sleep_now()
+    r = await _tools(h).sleep_now(without_brief=True)
     assert r["ok"] is True and r["report"]["brief_id"] == bid and r["report"]["operations"] == 1
     assert r["report"]["draft_id"] in r["message"]
     assert memory.get("/drafts", params={"status": "pending"}).json()["count"] == 1
@@ -121,10 +121,10 @@ async def test_sleep_now_refuses_while_a_cycle_is_under_way(memory, make_hippo):
     t = _tools(h)
     short(memory, "a", "t"); short(memory, "b", "t")
     _brief(memory)
-    assert (await t.sleep_now())["ok"] is True
+    assert (await t.sleep_now(without_brief=True))["ok"] is True
     short(memory, "c", "u"); short(memory, "d", "u")
     _brief(memory)
-    r = await t.sleep_now()
+    r = await t.sleep_now(without_brief=True)
     assert r["ok"] is False and r["refused"] is True and r["report"]["status"] == "chain_open"
     assert r["message"].startswith("Nothing started") and "under way" in r["message"]
     assert memory.get("/drafts", params={"status": "pending"}).json()["count"] == 1
@@ -132,7 +132,7 @@ async def test_sleep_now_refuses_while_a_cycle_is_under_way(memory, make_hippo):
 
 
 async def test_a_quiet_sleep_says_it_was_quiet(make_hippo):
-    r = await _tools(make_hippo()).sleep_now()
+    r = await _tools(make_hippo()).sleep_now(without_brief=True)
     assert r["ok"] is True and r["report"]["quiet"] is True and "quiet" in r["message"]
 
 
@@ -163,7 +163,7 @@ async def test_tend_now_redrafts_a_denial_and_says_so(memory, make_hippo):
     t = _tools(h)
     short(memory, "the nuc stays on focal", "nuc"); short(memory, "the nuc hates jammy", "nuc")
     _brief(memory)
-    did = (await t.sleep_now())["report"]["draft_id"]
+    did = (await t.sleep_now(without_brief=True))["report"]["draft_id"]
     review(memory, did, [{"op": 0, "verdict": "deny", "critique": "DENIED: it stayed on focal"}])
     r = await t.tend_now()
     assert r["ok"] is True and len(r["report"]["resubmitted"]) == 1 and "resubmitted 1" in r["message"]
@@ -184,7 +184,7 @@ async def test_history_is_newest_first_and_readable(memory, make_hippo):
     h = make_hippo()
     t = _tools(h)
     short(memory, "a", "t"); short(memory, "b", "t")
-    await t.sleep_now()
+    await t.sleep_now(without_brief=True)
     await t.tend_now()
     got = await t.sleep_history(limit=5)
     assert got["count"] == 2 and [e["kind"] for e in got["entries"]] == ["tend", "sleep"]
@@ -197,7 +197,7 @@ async def test_audit_is_the_numbers_and_the_verdicts_without_the_wording(memory,
     t = _tools(h)
     short(memory, "the nuc stays on focal", "nuc"); short(memory, "the nuc hates jammy", "nuc")
     _brief(memory, "nuc talk")
-    did = (await t.sleep_now())["report"]["draft_id"]
+    did = (await t.sleep_now(without_brief=True))["report"]["draft_id"]
     review(memory, did, [{"op": 0, "verdict": "deny", "critique": "DENIED: it stayed on focal"}])
     again = (await t.tend_now())["report"]["resubmitted"][0]["draft_id"]
     review(memory, again, [{"op": 0, "verdict": "approve"}])
@@ -217,7 +217,7 @@ async def test_replays_list_and_replay_without_submitting(memory, make_hippo):
     h = make_hippo(model=_model)
     t = _tools(h)
     short(memory, "the nuc stays on focal", "nuc"); short(memory, "the nuc hates jammy", "nuc")
-    did = (await t.sleep_now())["report"]["draft_id"]
+    did = (await t.sleep_now(without_brief=True))["report"]["draft_id"]
     review(memory, did, [{"op": 0, "verdict": "approve"}])
 
     rows = (await t.list_replays())["entries"]

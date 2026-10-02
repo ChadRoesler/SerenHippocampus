@@ -13,7 +13,9 @@ needs, for a job that runs a few minutes a night and after a review. So when
   until it answers its health check;
 - keeps it warm for `keep_warm_seconds` after the last call, so a review
   followed by a redraft reuses it;
-- stops it after that, on the next tick;
+- stops it after that, on the next tick - or at once when the cycle is over
+  (no chain open), or, with `handover` on, before the main model is poked to
+  review, so a box that holds one model at a time never holds two;
 - NEVER stops a server it did not start. If the server already answered when
   the hippocampus looked, someone started it for something else.
 
@@ -222,6 +224,21 @@ class ModelLifecycle:
             self.state = "down"
             self._emit("model_stopped", idle_seconds=round(now - self.last_used))
             self._log("model stopped (idle)")
+            return True
+
+    def stop_now(self, why: str = "not needed") -> bool:
+        """Stop the server this hippocampus started, without waiting out
+        keep_warm_seconds: the chain has landed, or the main model is about
+        to be poked and the two cannot both be loaded (handover). True when
+        it stopped something."""
+        with self._lock:
+            if not (self.managed and self.started_by_us):
+                return False
+            self._stop_quietly()
+            self.started_by_us = False
+            self.state = "down"
+            self._emit("model_stopped", why=why)
+            self._log(f"model stopped ({why})")
             return True
 
     def _stop_quietly(self) -> None:

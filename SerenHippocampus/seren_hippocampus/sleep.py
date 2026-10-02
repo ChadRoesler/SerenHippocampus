@@ -227,7 +227,7 @@ def grounded(text: str, entries: list[dict[str, Any]]) -> bool:
 # Stamped on every draft with the model that wrote it (Memory's /audit groups
 # by it). Bump this when a drafting or redrafting prompt changes, so a change
 # in the numbers can be told apart from a change of model (26 Sept 2026).
-PROMPT_VERSION = "2026-09-30"                             # few operations, honest citations, no repeated restatement
+PROMPT_VERSION = "2026-10-01"                             # a redraft no longer offers restated_content
 
 
 class Busy(RuntimeError):
@@ -247,6 +247,9 @@ class Hippocampus:
         self._withdrawn = 0                                # denied ops the redraft dropped, per tend
         self._hint_hits: dict[tuple[str, str], list[str]] = {}   # per sleep: (promote|noise, hint) -> topics
         self._next_redraft_at = 0.0                        # tend cycle on: the loop redrafts no sooner than this
+        self._nudged = False                               # 'your turn': the next tick redrafts whatever the clock says
+        self._wake: Optional[Any] = None                   # set by the app: run a tick now instead of at the interval
+        self._ripple_retry: Optional[dict[str, Any]] = None   # a ripple that was skipped; fired again on the next tick
         self._cut_off = False                              # the last parsed answer ran out of tokens
         self._cut_offs = 0                                 # how many did, this sleep
         self._served_model = ""          # what the server said it runs, from its last answer
@@ -326,7 +329,25 @@ class Hippocampus:
         # The ripple: the question, where the webhook is the record. hip-ripple.
         ripple = getattr(self, "ripple", None)          # None while __init__ is still wiring
         if ripple is not None and ripple.wants(kind):
-            ev["ripple"] = ripple.fire(ev)
+            self._fire_ripple(ev)
+
+    # Events that hand the work to the main model: it is about to load, or to
+    # be the one thing running.
+    HANDS_OVER = ("draft_submitted", "tend_resubmitted")
+
+    def _fire_ripple(self, ev: dict[str, Any]) -> None:
+        if self._cfg.model.lifecycle.handover and ev.get("event") in self.HANDS_OVER:
+            # The Nano floor: one model in memory at a time. The draft is out,
+            # so the small model goes BEFORE the main one is poked.
+            model = getattr(self, "model", None)
+            if model is not None:
+                try:
+                    model.stop_now("handing over to the main model")
+                except Exception as e:  # noqa: BLE001
+                    self._log(f"hand-over stop failed: {e}")
+        ev["ripple"] = self.ripple.fire(ev)
+        if (ev["ripple"] or {}).get("skipped"):
+            self._ripple_retry = ev                        # see tick()
 
     # ── state (the only thing this service keeps) ─────────────────────────
     def _state_path(self) -> Path:
@@ -431,10 +452,20 @@ class Hippocampus:
         return None
 
     # ── public entry points ───────────────────────────────────────────────
-    def sleep(self) -> dict[str, Any]:
+    def sleep(self, ask_for_brief: bool = False) -> dict[str, Any]:
         """Sleep NOW, by hand (POST /sleep, the viewer's button, the MCP
-        sleep_now): on the open brief if there is one, without one otherwise.
-        The loop itself never sleeps without a brief - see check().
+        sleep_now): on the open brief if there is one. The loop itself never
+        sleeps without a brief - see check().
+
+        ask_for_brief (what the button and the tool pass): with no brief
+        waiting, do not draft blind - ASK for one, and let the check sleep on
+        it when it arrives. Chad's map of the cycle, 1 Oct 2026: 'Sleep starts
+        > Hip wakes > Hip asks for brief > you draft brief > draft cycle.' A
+        sleep started by hand that morning skipped the brief and drafted 20
+        operations unsteered; two of them survived first review. Returns
+        asked_for_brief: true and records no sleep, so bedtime does not move.
+        Where nobody can be asked (brief_request off) it sleeps without one,
+        as before.
 
         ONE CYCLE AT A TIME, by hand too. The tick already waited for an open
         chain to land; a sleep by hand did not, so it could start a second
@@ -456,6 +487,20 @@ class Hippocampus:
                 brief = self._mem.latest_brief()
             except MemoryError:
                 pass
+            if brief and brief.get("id") in (self.state.get("parked_briefs") or []):
+                brief = None                               # set aside: its hints matched nothing
+            if brief is None and ask_for_brief and self._cfg.sleep.brief_request:
+                try:
+                    req = self.request_brief(force=True)
+                except MemoryError:
+                    req = None                             # Memory is down: _sleep records that as it always has
+                if req is not None:
+                    self._log("sleep by hand with no brief: asked for one; the check sleeps on it when it arrives")
+                    return {"asked_for_brief": True, "status": "asked_for_brief", "draft_id": None,
+                            "operations": 0, "purged": 0, "error": None,
+                            "intent_id": req.get("intent_id"),
+                            "message": "no brief is waiting, so the hippocampus asked for one instead of drafting "
+                                       "blind; it sleeps on the brief at the next check after it arrives"}
             return self._sleep(brief=brief)
         finally:
             self._lock.release()
@@ -480,6 +525,14 @@ class Hippocampus:
         and a redraft waiting only for a new brief would wait for ever."""
         now = time.time() if now is None else now
         s = self._cfg.sleep
+        if self._nudged:
+            # The reviewer said 'your turn': the verdicts are in and it has
+            # left. No timer and no tend-cycle setting stands between that and
+            # the redraft - which is what lets a box with the tend cycle off
+            # still finish a chain in one go.
+            self._nudged = False
+            self._next_redraft_at = now + s.tend_interval_seconds
+            return True
         if s.tend_cycle:
             if now < self._next_redraft_at:
                 return False
@@ -511,12 +564,47 @@ class Hippocampus:
         finally:
             self._lock.release()
 
+    def nudge(self) -> dict[str, Any]:
+        """'Your turn.' The main model's last act after writing a brief or
+        reviewing a draft: the hippocampus carries on NOW instead of at the
+        next tick - sleeps on the brief, redrafts what was denied, closes
+        what landed. Neuron to neuron (Chad, 1 Oct 2026): the hippocampus
+        could wake the model, and the model could only wait for a timer. On
+        1 Oct a chain with five minutes of work in it took twenty-five.
+
+        Returns at once; the work happens on the loop. On a cluster the same
+        call arrives from the Observatory once it has the brief and has
+        stopped the main model's server."""
+        self._nudged = True
+        woke = False
+        if self._wake is not None:
+            try:
+                self._wake()
+                woke = True
+            except Exception as e:  # noqa: BLE001 - the next tick still honours the nudge
+                self._log(f"nudge could not wake the loop: {e}")
+        self._emit("nudged", woke=woke)
+        return {"ok": True, "woke": woke,
+                "message": "carrying on now" if woke else "noted; the next tick carries on"}
+
     def tick(self) -> dict[str, Any]:
         """One turn of the loop: tend the open chains, check for a brief, and
-        stop a model this hippocampus started once it has gone idle."""
+        stop a model this hippocampus started once it is not needed."""
+        if self._ripple_retry is not None:
+            # A ripple that could not start (the last one for that event was
+            # still running): nobody was told. Tell them now.
+            ev, self._ripple_retry = self._ripple_retry, None
+            self._fire_ripple(ev)
         out = {"tend": self.tend(redraft=self.redraft_due()), "check": self.check()}
         try:
-            out["model_stopped"] = self.model.maybe_stop()
+            # The cycle is over when no chain is open: nothing will call the
+            # model again before the next sleep, so it goes now rather than
+            # sitting loaded for keep_warm_seconds. Mid-chain it stays warm
+            # for the redraft (unless handover already stopped it).
+            if self.model.started_by_us and not self._open_chain():
+                out["model_stopped"] = self.model.stop_now("the cycle is over")
+            else:
+                out["model_stopped"] = self.model.maybe_stop()
         except Exception as e:  # noqa: BLE001
             self._log(f"model stop check failed: {e}")
         return out
@@ -546,10 +634,19 @@ class Hippocampus:
             # Flagged memories are purged on the tick, not at the sleep: a flag is
             # a decision already made, and a month with no brief must not keep a
             # leaked key alive.
-            purged = self._mem.tidy(age_out=False, near=False, sweep=False, purge=True).get("purged") or []
+            flags = self._mem.tidy(age_out=False, near=False, sweep=False, purge=True)
+            purged = flags.get("purged") or []
             if purged:
                 self._log(f"purged {len(purged)} flagged memories")
                 self._emit("purged", count=len(purged), ids=[t.get("id") for t in purged])
+            restored = flags.get("restored") or []
+            if restored:
+                # Cores flagged to get their earlier wording back (Memory's
+                # undo-restate): the same gate as forget - asked for with a
+                # reason, carried out here.
+                self._log(f"put back the earlier wording of {len(restored)} core(s): " +
+                          ", ".join(str(t.get("id")) + (f" ({t['error']})" if t.get("error") else "") for t in restored))
+                self._emit("restored", count=len(restored), ids=[t.get("id") for t in restored])
 
             brief = self._mem.latest_brief()
             if brief and brief.get("id") in (self.state.get("parked_briefs") or []):
@@ -601,7 +698,7 @@ class Hippocampus:
         req = self.state.get("brief_request")
         return req if isinstance(req, dict) and req.get("answered") is None else None
 
-    def request_brief(self, now: Optional[float] = None) -> Optional[dict[str, Any]]:
+    def request_brief(self, now: Optional[float] = None, force: bool = False) -> Optional[dict[str, Any]]:
         """'I see you're looking tired, let's get ready for bed.' Within
         brief_lead_seconds of the next sleep, once per sleep, and only when no
         brief has arrived since the last one: leave an intent in Memory's
@@ -622,12 +719,20 @@ class Hippocampus:
                        nudge=req["nudges"])
             self._save_state()
             return req
-        if self._mem.latest_brief():
+        if not force and self._mem.latest_brief():
             return None                                   # the model got there first
         when = time.strftime("%H:%M", time.localtime(due)) if due > now else "soon"
         text = (f"The hippocampus wants a brief before it sleeps at {when}: what mattered since the last "
                 "sleep, promote_hints for the running bits and the real lessons, noise_hints for the one-offs. "
                 "submit_brief on Memory writes it; without one the small model pulls a guess from the fragments.")
+        if force:
+            # Asked for by hand (sleep(ask_for_brief=True)): the sleep is wanted
+            # now, whatever the clock says, and it waits for the brief.
+            due, when = now, "now"
+            text = ("A sleep was started by hand and the hippocampus wants a brief before it drafts: what "
+                    "mattered since the last sleep, promote_hints for the running bits and the real lessons, "
+                    "noise_hints for the one-offs. submit_brief on Memory writes it; the sleep starts at the "
+                    "next check after it arrives.")
         out = self._mem.add_near(text, topic="hippocampus, brief", trigger_type="always",
                                  expires_at=due + 6 * 3600)
         req = {"asked_at": now, "for_sleep_due_at": due, "intent_id": out.get("id"), "answered": None}
@@ -1412,7 +1517,7 @@ class Hippocampus:
                 "You are a memory consolidator's drafting worker. A proposed operation on long-term "
                 "memory was DENIED by the reviewer. Address the critique. Return ONLY JSON, one of:\n"
                 '{"content": "...", "kind": "new_core|attach|supersede", "target_core_id": "...", '
-                '"restated_content": "...", "rationale": "..."}\n'
+                '"rationale": "..."}\n'
                 '{"withdraw": true, "rationale": "..."}\n'
                 "Keep the kind and target unless the critique says they are wrong. A wrong target is not a "
                 "reason to withdraw: move the operation to the right core below, or make it a new_core if "
@@ -1505,18 +1610,26 @@ class Hippocampus:
                 if target not in {c["id"] for c in candidates}:
                     return None                                # invented: see _invented_target
         content = str(parsed.get("content") or "").strip()
-        if not content and kind != "attach":
-            # The text in restated_content instead: a new core or a supersession
-            # has only the one statement, so that is it. Seen live 28 Sept 2026
-            # (a supersede with the whole corrected dream in restated_content).
+        if not content:
+            # The text in restated_content instead. A new core or a supersession
+            # has only the one statement, so that is it (seen live 28 Sept 2026:
+            # a supersede with the whole corrected dream in restated_content).
+            # An attach too: the episode put in the wrong field, with content
+            # empty (1 Oct 2026) - it is the satellite's text.
             content = str(parsed.get("restated_content") or "").strip()
-        if kind != "attach" and not content:
+        if not content:
             return None
+        # A REDRAFT NEVER REWORDS A CORE. restated_content replaces the target
+        # core's wording when the attach is approved, and a redraft sees each
+        # core only as its first 300 characters, so it cannot write the whole
+        # core again. What it wrote there was the episode's own text, and
+        # approving it overwrote two cores with their satellites (1 Oct 2026).
+        # The attach lands as a satellite; the core keeps its words.
         new = {"kind": kind, "content": content, "topic": op.get("topic"), "target_core_id": target,
                "source_short_ids": [s["id"] for s in src], "evidence_count": len(src),
                "rationale": rationale}
-        if kind == "attach" and parsed.get("restated_content"):
-            new["restated_content"] = str(parsed["restated_content"]).strip()
+        if op.get("index") is not None:
+            new["redraft_of"] = op["index"]                # the reviewer sees every version of it (get_draft)
         return new
 
     def _invented_target(self, raw: str, candidates: list[dict[str, Any]]) -> bool:

@@ -89,6 +89,13 @@ class ModelLifecycleConfig(BaseModel):
     # How long the model stays up after its last call, so a review and a
     # redraft reuse it. Stopped on the first tick after that.
     keep_warm_seconds: int = 300
+    # THE HAND-OVER, for a box that cannot hold two models at once (the Nano
+    # floor): stop the small model BEFORE the main model is poked - when a
+    # draft or a redraft is ready for review - instead of keeping it warm.
+    # The main model has the memory while it reviews; the next redraft starts
+    # the small one again. Off = keep it warm, which is quicker where there
+    # is room for both. Only ever stops a server this hippocampus started.
+    handover: bool = False
     # After a failed start, wait this long before trying again.
     retry_after_seconds: int = 900
 
@@ -138,6 +145,11 @@ class SleepConfig(BaseModel):
     # an OOM for the main model'). tend_now by hand redrafts either way.
     tend_cycle: bool = True
     tend_interval_seconds: int = 600
+    # A nudge ('your turn', from the main model or an Observatory) carries on
+    # at once - after the session that sent it has ended, waited for up to
+    # this long. A woken session nudges as its last act and is still alive
+    # for a moment; the next wake-up must not land on top of it.
+    nudge_wait_seconds: int = 180
     max_entries_per_run: int = 500
     # A topic cluster needs this many short-terms to be proposed at all,
     # unless a brief hint, a pin or a verbatim flag says otherwise.
