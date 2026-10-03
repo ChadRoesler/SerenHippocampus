@@ -311,6 +311,17 @@ class UpdatesConfig(BaseModel):
     allow_prerelease: bool = False
 
 
+class BackupConfig(BaseModel):
+    """Snapshots of what this service keeps (seren_sinew.stores): its state
+    file, the voice card with every version, and the replay packets. Logs are
+    left out. GET /stores says what is kept; POST /stores/snapshot takes one."""
+    enabled: bool = True
+    dir: str = ""                 # blank = `backups` beside the state file
+    every_hours: float = 24.0     # 0 = never on its own
+    keep_daily: int = 14
+    keep_weekly: int = 8
+
+
 class HippocampusConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     memory: MemoryTarget = Field(default_factory=MemoryTarget)
@@ -320,6 +331,12 @@ class HippocampusConfig(BaseModel):
     ripple: RippleConfig = Field(default_factory=RippleConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
+    backup: BackupConfig = Field(default_factory=BackupConfig)
+
+    def resolved_backup_dir(self) -> Path:
+        if self.backup.dir.strip():
+            return Path(os.path.expanduser(self.backup.dir)).resolve()
+        return self.resolved_state_path().resolve().parent / "backups"
 
     def resolved_state_path(self) -> Path:
         p = Path(os.path.expanduser(self.sleep.state_path))
@@ -440,6 +457,7 @@ def load_config(explicit_path: Optional[str] = None) -> HippocampusConfig:
         notify=_block(NotifyConfig, data.get("notify"), "notify"),      # type: ignore[arg-type]
         ripple=_block(RippleConfig, data.get("ripple"), "ripple"),      # type: ignore[arg-type]
         voice=_block(VoiceConfig, data.get("voice"), "voice"),          # type: ignore[arg-type]
+        backup=_block(BackupConfig, data.get("backup"), "backup"),      # type: ignore[arg-type]
     )
     off = os.getenv(f"{ENV_PREFIX}_UPDATES_ENABLED")
     if off is not None:

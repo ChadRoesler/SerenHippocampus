@@ -58,6 +58,23 @@ def create_app(config: Optional[HippocampusConfig] = None,
         )
         tasks: list[asyncio.Task] = []
         app.state.next_at: dict[str, Optional[float]] = {"sleep": None, "tend": None}
+
+        # What this service keeps, and snapshots of it on its own schedule
+        # (seren_sinew.stores): the state file, the voice card and its
+        # history, the replay packets. Not the logs, and not the snapshots.
+        from seren_sinew.stores import Store, StoreKeeper, snapshot_loop
+        state_dir = cfg.resolved_state_path().resolve().parent
+        app.state.stores = StoreKeeper(
+            "seren-hippocampus",
+            lambda: [Store("state", "dir", str(state_dir),
+                           "sleep state and history, the voice card with every version, replay packets",
+                           exclude=("*.log", "*.partial", "*.tmp"))],
+            cfg.resolved_backup_dir(),
+            extra=lambda: {"version": __version__, "voice_card_version": app.state.hippocampus.voice.version()},
+            keep_daily=cfg.backup.keep_daily, keep_weekly=cfg.backup.keep_weekly,
+            log=lambda m: print(f"[seren-hippocampus] {m}")) if cfg.backup.enabled else None
+        if app.state.stores is not None and cfg.backup.every_hours > 0:
+            tasks.append(asyncio.create_task(snapshot_loop(lambda: app.state.stores, cfg.backup.every_hours)))
         # The nudge: 'your turn' from the main model (or, on a cluster, from the
         # Observatory). It ends the wait for the next tick.
         loop = asyncio.get_running_loop()
@@ -202,6 +219,10 @@ def create_app(config: Optional[HippocampusConfig] = None,
             return await asyncio.to_thread(h.check)
         except Busy as e:
             raise HTTPException(409, str(e))
+
+    # GET /stores, POST /stores/snapshot, GET /stores/snapshots[/{id}/archive]
+    from seren_sinew.stores import add_store_routes
+    add_store_routes(app, lambda: getattr(app.state, "stores", None))
 
     @app.post("/nudge")
     async def nudge(request: Request):

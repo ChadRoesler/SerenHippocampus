@@ -21,7 +21,7 @@ dependencies = [
     "pyyaml>=6.0",
     "httpx>=0.26",
     "seren-meninges>=2.4.0,<3",
-    "seren-sinew>=1.6.5,<2",
+    "seren-sinew>=1.8.0,<2",   # 1.8.0: seren_sinew.stores (snapshots, archives)
 ]
 
 [project.optional-dependencies]

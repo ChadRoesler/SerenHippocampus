@@ -214,6 +214,60 @@ def _significant(text: str) -> set[str]:
     return {w for w in _words(text) if len(w) >= 4 and w not in _HINT_SKIP}
 
 
+# Lines of the prompts that have no business inside a memory. On 3 Oct 2026 a
+# redraft put "Source fragments (the critique may name them by the id in
+# brackets):" and the fragment list INSIDE its content, and it was approved
+# on the last attempt with the reviewer editing it out by hand.
+SCAFFOLDING = ("Source fragments", "Existing cores:", "THE CRITIQUE", "The critique, once more",
+               "What you proposed", "Other operations in this draft", "Previous content:", "Critique:",
+               "Steer:", "Fragments:", "Topic:", "JSON:", "Operation kind:", "Target core:")
+
+
+def strip_scaffolding(text: str) -> tuple[str, bool]:
+    """The text up to the first line that is prompt scaffolding, and whether
+    anything was cut. A memory is never the prompt echoed back."""
+    lines = (text or "").split("\n")
+    for i, line in enumerate(lines):
+        bare = line.strip()
+        if any(bare.startswith(m) for m in SCAFFOLDING):
+            return "\n".join(lines[:i]).strip(), True
+    return (text or "").strip(), False
+
+
+COVER_SENTENCE_MIN = 0.3   # a sentence this little of whose words are in the operation was not carried
+COVER_SENTENCE_WORDS = 6   # ...when it has at least this many words worth carrying
+
+
+def _sentences(text: str) -> list[str]:
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", text or "") if x.strip()]
+
+
+def covered_fragments(text: str, idxs: list[int], entries: list[dict[str, Any]]) -> tuple[list[int], list[int]]:
+    """Of the fragments an operation cites, the ones it CARRIES. A fragment
+    is judged sentence by sentence: one with a sentence of its own that the
+    operation says nothing of (fewer than COVER_SENTENCE_MIN of its words
+    appear) is cited, not carried. Approving archives every cited fragment;
+    on 3 Oct 2026 a two-subject fragment (the user's backup model, and how I
+    kiss) was archived by a core that held only the first subject, and the
+    kiss was gone. Returns (carried, left): what is left stays in short-term
+    for a later sleep, and is said in the log. Paraphrase is fine - a carried
+    sentence shares words with the operation even reworded; a subject left
+    out shares none."""
+    words = _significant(text)
+    if not words:
+        return list(idxs), []
+    carried, left = [], []
+    for i in idxs:
+        missing = False
+        for sent in _sentences(entries[i].get("content") or ""):
+            sw = _significant(sent)
+            if len(sw) >= COVER_SENTENCE_WORDS and len(sw & words) / len(sw) < COVER_SENTENCE_MIN:
+                missing = True
+                break
+        (left if missing else carried).append(i)
+    return carried, left
+
+
 def grounded(text: str, entries: list[dict[str, Any]]) -> bool:
     """Whether an operation's text plausibly comes from the pile's fragments:
     at least GROUNDED_MIN of its words are in them. True when either side is
@@ -227,7 +281,7 @@ def grounded(text: str, entries: list[dict[str, Any]]) -> bool:
 # Stamped on every draft with the model that wrote it (Memory's /audit groups
 # by it). Bump this when a drafting or redrafting prompt changes, so a change
 # in the numbers can be told apart from a change of model (26 Sept 2026).
-PROMPT_VERSION = "2026-10-02b"                            # cores per fragment and via satellites; the critique is true, content is required
+PROMPT_VERSION = "2026-10-03"                             # scaffolding cut from content; an op carries only the fragments it covers
 
 
 class Busy(RuntimeError):
@@ -1378,7 +1432,9 @@ class Hippocampus:
                     idxs.append(i)
             if not idxs:
                 idxs = list(range(len(entries)))
-            content = str(raw.get("content") or "").strip()
+            content, cut = strip_scaffolding(str(raw.get("content") or ""))
+            if cut:
+                self._log(f"{topic or 'untagged'}: cut prompt scaffolding out of a {kind}'s text")
             target = raw.get("target_core_id")
             target_op: Optional[int] = None
             if kind in ("attach", "supersede"):
@@ -1403,7 +1459,14 @@ class Hippocampus:
                           f"(copied from a core or the card?): {content[:90]!r}")
                 continue
             if kind != "verbatim":
-                idxs = cited_fragments(f"{content} {restated}", sorted(set(idxs)), entries)
+                # what the text covers first, then which of those it came from:
+                # a two-subject fragment shares the most words of all and would
+                # otherwise crowd the fragments the operation does carry out
+                idxs, left = covered_fragments(f"{content} {restated}", sorted(set(idxs)), entries)
+                idxs = cited_fragments(f"{content} {restated}", idxs, entries)
+                if left:
+                    self._log(f"{topic or 'untagged'}: a {kind} cites {len(left)} fragment(s) it carries less than "
+                              f"half of; they stay in short-term: " + ", ".join(entries[i]["id"][:8] for i in left))
             op = {"kind": kind, "content": content, "topic": topic, "target_core_id": target,
                   "source_short_ids": [entries[i]["id"] for i in sorted(set(idxs))],
                   "evidence_count": len(set(idxs)),
@@ -1770,6 +1833,7 @@ class Hippocampus:
                           + repr((raw or "")[:160]))
                 continue
             if new and not src:
+                # the fragments are gone (promoted by a sibling): the op keeps its ids as evidence
                 new["source_short_ids"] = list(op.get("source_short_ids") or [])
                 new["evidence_count"] = max(1, len(new["source_short_ids"]))
             if new:
@@ -1871,7 +1935,9 @@ class Hippocampus:
                     wants = None                               # itself is not a place to put it
                 if target is None and wants is None:
                     return None                                # invented: see _invented_target
-        content = str(parsed.get("content") or "").strip()
+        content, cut = strip_scaffolding(str(parsed.get("content") or ""))
+        if cut:
+            self._log(f"operation {op.get('index')}: cut prompt scaffolding out of the redraft's text")
         if not content:
             # The text in restated_content instead. A new core or a supersession
             # has only the one statement, so that is it (seen live 28 Sept 2026:
@@ -1887,8 +1953,16 @@ class Hippocampus:
         # episode's own text, and approving it overwrote two cores with their
         # satellites (1 Oct 2026). The attach lands as a satellite; the core
         # keeps its words.
+        # A redraft used to cite every fragment the denied operation cited. It
+        # carries only what its text covers (covered_fragments); the rest stays.
+        keep = list(range(len(src)))
+        if src and kind != "verbatim":
+            keep, left = covered_fragments(content, keep, src)
+            if left:
+                self._log(f"operation {op.get('index')}: the redraft carries less than half of "
+                          f"{len(left)} fragment(s); they stay in short-term: " + ", ".join(src[i]["id"][:8] for i in left))
         new = {"kind": kind, "content": content, "topic": op.get("topic"), "target_core_id": target,
-               "source_short_ids": [s["id"] for s in src], "evidence_count": len(src),
+               "source_short_ids": [src[i]["id"] for i in keep], "evidence_count": max(1, len(keep)),
                "rationale": rationale}
         if wants is not None:
             new["_wants_op"] = wants                       # resolved by _link_redrafts
