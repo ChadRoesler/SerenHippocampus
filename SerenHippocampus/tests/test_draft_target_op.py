@@ -133,7 +133,7 @@ def test_a_denied_dependent_redrafts_onto_its_approved_core(memory, make_hippo):
                          {"op": 1, "verdict": "deny", "critique": "DENIED: say it is his dream"}])
     core_id = _draft(memory, did)["operations"][0]["long_term_id"]
     t = h.tend()
-    assert f"Target core: {core_id}" in prompts[-1] and f"({core_id})" in prompts[-1]
+    assert f"target core: {core_id}" in prompts[-1] and f"({core_id})" in prompts[-1]
     op = _draft(memory, t["resubmitted"][0]["draft_id"])["operations"][0]
     assert (op["kind"], op["target_core_id"]) == ("attach", core_id)
     assert op.get("target_op") is None, "a redraft names real cores only"

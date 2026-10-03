@@ -184,11 +184,16 @@ async def test_history_is_newest_first_and_readable(memory, make_hippo):
     h = make_hippo()
     t = _tools(h)
     short(memory, "a", "t"); short(memory, "b", "t")
-    await t.sleep_now(without_brief=True)
-    await t.tend_now()
+    did = (await t.sleep_now(without_brief=True))["report"]["draft_id"]
+    await t.tend_now()                                    # the draft is still pending: nothing to do
     got = await t.sleep_history(limit=5)
-    assert got["count"] == 2 and [e["kind"] for e in got["entries"]] == ["tend", "sleep"]
-    assert got["entries"][1]["draft_id"] and got["entries"][1]["when"]
+    assert got["count"] == 1 and [e["kind"] for e in got["entries"]] == ["sleep"]
+    assert got["quiet_tends"]["count"] == 1 and got["quiet_tends"]["last"], "counted, not listed"
+    review(memory, did, [{"op": 0, "verdict": "approve"}])
+    await t.tend_now()                                    # this one closes the chain: it is listed
+    got = await t.sleep_history(limit=5)
+    assert [e["kind"] for e in got["entries"]] == ["tend", "sleep"], "newest first"
+    assert got["entries"][0]["closed"] == 1 and got["entries"][1]["draft_id"] and got["entries"][1]["when"]
     assert len((await t.sleep_history(limit=1))["entries"]) == 1
 
 

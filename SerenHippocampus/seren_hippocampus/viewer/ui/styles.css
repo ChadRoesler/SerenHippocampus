@@ -50,3 +50,6 @@ details.entry > summary::-webkit-details-marker { display: none; }
 .replay-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
 code.id { font-size: 11px; opacity: .6; }
 .empty { opacity: .7; padding: 18px 0; }
+
+/* History: the 'show more' button under a short list */
+.btn.more { margin: 6px 0 14px; font-size: 12px; opacity: 0.85; }

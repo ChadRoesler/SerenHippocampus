@@ -424,6 +424,10 @@ class HippocampusToolImpl:
         purged, quiet, catch-up; for a tend, redrafts resubmitted and chains
         closed or ended). The service keeps the last 40.
 
+        A tend that found nothing to do is not listed (the loop runs one
+        every few minutes); quiet_tends says how many there were and when
+        the last one ran.
+
         For "did last night's sleep run, and did it work". Cheap, local, no
         Memory call. For what happened to the drafts afterwards - the
         verdicts, the critiques, what landed - use audit_sleeps.
@@ -431,7 +435,10 @@ class HippocampusToolImpl:
         now = time.time()
         rows = list(reversed(self.h.state.get("history") or []))
         n = max(1, min(int(limit or 10), 40))
-        return {"count": len(rows),
+        quiet = dict(self.h.state.get("quiet_tends") or {"count": 0})
+        if quiet.get("last_at"):
+            quiet["last"] = _when(quiet["last_at"], now)
+        return {"count": len(rows), "quiet_tends": quiet,
                 "entries": [{"when": _when(r.get("finished_at"), now), **r} for r in rows[:n]]}
 
     async def audit_sleeps(self, limit: int = 5) -> dict:

@@ -284,8 +284,9 @@ def test_viewer_queue_and_history_serve_the_window(memory, bridge, hcfg):
         q = tc.get("/queue").json()
         assert q["count"] == 1 and q["drafts"][0]["operations"][0]["status"] == "pending"
         h = tc.get("/history").json()
-        assert [e["kind"] for e in h["entries"]] == ["tend", "sleep"], "newest first"
-        assert h["entries"][1]["operations"] == 1 and h["entries"][1]["error"] is None
+        assert [e["kind"] for e in h["entries"]] == ["sleep"], "a tend with nothing to do is not listed"
+        assert h["quiet_tends"]["count"] == 1
+        assert h["entries"][0]["operations"] == 1 and h["entries"][0]["error"] is None
         st = tc.get("/status").json()
         assert "next_sleep_at" in st and st["next_sleep_at"] is None, "external mode: no timer"
         # the Audit tab: the chain end to end, and the model that drafted it
@@ -315,3 +316,45 @@ def test_queue_reports_an_unreachable_memory_instead_of_failing(hcfg):
         r = tc.post("/sleep?without_brief=true").json()
         assert r["error"] and "refused" in r["error"], "a sleep against a dead Memory records why it stopped"
     client.close()
+
+
+def test_quiet_tends_never_push_a_sleep_out_of_the_history(memory, make_hippo):
+    """The loop tends every few minutes. Listed, a day of them filled the
+    history's 40 rows in about three hours and last night's sleep fell off
+    the end (Chad, 2 Oct 2026: 'the tends are all shown which makes it a
+    chore to hit events')."""
+    h = make_hippo()
+    short(memory, "a", "t"); short(memory, "b", "t")
+    did = h.sleep()["draft_id"]
+    for _ in range(60):
+        h.tend()
+    rows = h.state["history"]
+    assert [r["kind"] for r in rows] == ["sleep"] and h.state["quiet_tends"]["count"] == 60
+    review(memory, did, [{"op": 0, "verdict": "approve"}])
+    h.tend()
+    assert [r["kind"] for r in h.state["history"]] == ["sleep", "tend"], "a tend that closed a chain is listed"
+
+
+def test_sleeps_and_tends_are_each_kept_to_their_own_last_forty(make_hippo):
+    h = make_hippo()
+    for i in range(45):
+        h._remember_run("tend", {"started_at": i, "finished_at": i}, resubmitted=1, ended=0, closed=0, deferred=0)
+    h._remember_run("sleep", {"started_at": 0, "finished_at": 0}, operations=3)
+    for i in range(45, 100):
+        h._remember_run("tend", {"started_at": i, "finished_at": i}, resubmitted=1, ended=0, closed=0, deferred=0)
+    kinds = [r["kind"] for r in h.state["history"]]
+    assert kinds.count("tend") == 40 and kinds.count("sleep") == 1, "the sleep is still there"
+    assert h.state["history"][-1]["finished_at"] == 99
+
+
+def test_an_old_state_file_full_of_quiet_tends_is_folded_at_start(memory, make_hippo, hcfg):
+    import json
+    from pathlib import Path
+    quiet = [{"kind": "tend", "started_at": i, "finished_at": i + 1, "error": None,
+              "resubmitted": 0, "ended": 0, "closed": 0, "deferred": 0} for i in range(38)]
+    real = [{"kind": "sleep", "started_at": 100, "finished_at": 101, "error": None, "operations": 3},
+            {"kind": "tend", "started_at": 200, "finished_at": 201, "error": None, "resubmitted": 2, "ended": 0, "closed": 0, "deferred": 0}]
+    Path(hcfg.sleep.state_path).write_text(json.dumps({"history": quiet[:20] + real + quiet[20:]}), encoding="utf-8")
+    h = make_hippo()
+    assert [r["kind"] for r in h.state["history"]] == ["sleep", "tend"]
+    assert h.state["quiet_tends"]["count"] == 38 and h.state["quiet_tends"]["last_at"] == 38

@@ -227,7 +227,7 @@ def grounded(text: str, entries: list[dict[str, Any]]) -> bool:
 # Stamped on every draft with the model that wrote it (Memory's /audit groups
 # by it). Bump this when a drafting or redrafting prompt changes, so a change
 # in the numbers can be told apart from a change of model (26 Sept 2026).
-PROMPT_VERSION = "2026-10-01"                             # a redraft no longer offers restated_content
+PROMPT_VERSION = "2026-10-02b"                            # cores per fragment and via satellites; the critique is true, content is required
 
 
 class Busy(RuntimeError):
@@ -243,6 +243,7 @@ class Hippocampus:
         self._lock = threading.Lock()
         self._notify_transport = notify_transport
         self.state: dict[str, Any] = self._load_state()
+        self._fold_quiet_tends()
         self._model_failures: list[dict[str, Any]] = []
         self._withdrawn = 0                                # denied ops the redraft dropped, per tend
         self._hint_hits: dict[tuple[str, str], list[str]] = {}   # per sleep: (promote|noise, hint) -> topics
@@ -1001,14 +1002,51 @@ class Hippocampus:
         self._log(f"{stage} failed for {topic or 'untagged'}: {why[:200]}")
         self._emit(f"{stage}_failed", topic=topic, why=why[:300])
 
+    def _fold_quiet_tends(self) -> None:
+        """A state file from before quiet tends stopped being listed is full
+        of them. Fold them into the count once, at start, so the history
+        shows what happened and not forty rows of nothing."""
+        rows = list(self.state.get("history") or [])
+        quiet = [r for r in rows if r.get("kind") == "tend" and not r.get("error")
+                 and not any(r.get(k) for k in ("resubmitted", "ended", "closed", "deferred"))]
+        if not quiet:
+            return
+        q = dict(self.state.get("quiet_tends") or {})
+        q["count"] = int(q.get("count") or 0) + len(quiet)
+        q.setdefault("since", min((r.get("started_at") or 0) for r in quiet))
+        q["last_at"] = max(q.get("last_at") or 0, max((r.get("finished_at") or 0) for r in quiet))
+        self.state["quiet_tends"] = q
+        self.state["history"] = [r for r in rows if r not in quiet]
+
     def _remember_run(self, kind: str, report: dict[str, Any], **summary: Any) -> None:
-        """A bounded history for the viewer: what each run did or why it stopped."""
+        """A bounded history for the viewer: what each run did or why it stopped.
+
+        A TEND THAT FOUND NOTHING TO DO IS COUNTED, NOT LISTED. The loop tends
+        every few minutes, and nearly every one of those closes nothing and
+        redrafts nothing; listed, they filled the history in about three hours
+        and pushed last night's sleep out of it (Chad, 2 Oct 2026: 'the tends
+        are all shown which makes it a chore to hit events'). Sleeps and tends
+        are each kept to their own last 40, so neither crowds the other out."""
+        if (kind == "tend" and not report.get("error") and not report.get("model_failures")
+                and not any(summary.get(k) for k in ("resubmitted", "ended", "closed", "deferred"))):
+            q = dict(self.state.get("quiet_tends") or {})
+            q["count"] = int(q.get("count") or 0) + 1
+            q.setdefault("since", report.get("started_at"))
+            q["last_at"] = report.get("finished_at")
+            self.state["quiet_tends"] = q
+            return
         rows = list(self.state.get("history") or [])
         rows.append({"kind": kind, "started_at": report.get("started_at"),
                      "finished_at": report.get("finished_at"),
                      "duration_seconds": round((report.get("finished_at") or 0) - (report.get("started_at") or 0), 2),
                      "error": report.get("error"), **summary})
-        self.state["history"] = rows[-40:]
+        keep: dict[str, int] = {}
+        kept = []
+        for r in reversed(rows):
+            keep[r.get("kind")] = keep.get(r.get("kind"), 0) + 1
+            if keep[r.get("kind")] <= 40:
+                kept.append(r)
+        self.state["history"] = list(reversed(kept))
 
     def _held_short_ids(self) -> set[str]:
         """Short-terms already spoken for by a pending draft. Proposing them
@@ -1114,20 +1152,88 @@ class Hippocampus:
         ops += self._shifted(drafted, len(ops))
         return ops
 
+    MAX_CANDIDATE_QUERIES = 8
+
     def _candidates(self, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        query = " ".join((e.get("content") or "") for e in entries)[:1500]
-        try:
-            hits = self._mem.search_cores(query, n=self._cfg.sleep.candidate_cores)
-        except MemoryError as e:
-            self._log(f"candidate search failed ({e}); proposing without existing cores")
+        """The existing cores to show the drafting model for this pile.
+
+        ONE SEARCH PER FRAGMENT, then merged by rank. One search on every
+        fragment glued together and cut at 1,500 characters found cores near
+        the pile's average, which is near nothing in particular.
+
+        A SATELLITE HIT COUNTS FOR ITS CORE. Memory's search fetched twice the
+        rows asked for and then threw the satellites away, so a pile about
+        something already well recorded - whose nearest rows are that core's
+        own episodes - came back with the core crowded out (2 Oct 2026: 9 of
+        30 first-round denials were 'wrong core'). The satellite says which
+        core it belongs to; that core is the candidate, and the satellite is
+        shown under it as a sample of what already hangs there."""
+        want = max(1, int(self._cfg.sleep.candidate_cores))
+        texts = [(e.get("content") or "").strip() for e in entries]
+        queries = [t[:1500] for t in texts if t][: self.MAX_CANDIDATE_QUERIES]
+        if len(queries) > 1:
+            queries.append(" ".join(texts)[:1500])
+        score: dict[str, float] = {}
+        row: dict[str, dict[str, Any]] = {}
+        via: dict[str, str] = {}
+        failed = None
+        for q in queries:
+            try:
+                hits = self._mem.search_long(q, n=want)
+            except MemoryError as e:
+                failed = e
+                continue
+            for rank, h in enumerate(hits):
+                meta = h.get("metadata") or {}
+                if meta.get("superseded_by"):
+                    continue
+                if meta.get("kind", "core") == "satellite":
+                    cid = meta.get("core_id")
+                    if not cid:
+                        continue
+                    via.setdefault(cid, h.get("content") or "")
+                else:
+                    cid = h["id"]
+                    row[cid] = h
+                score[cid] = score.get(cid, 0.0) + 1.0 / (60 + rank)
+        if failed is not None and not score:
+            self._log(f"candidate search failed ({failed}); proposing without existing cores")
             return []
         out = []
-        for h in hits:
+        for cid in sorted(score, key=lambda c: -score[c])[:want]:
+            h = row.get(cid)
+            if h is None:                                   # reached only through a satellite
+                h = self._mem.core(cid)
+                if h is None or (h.get("metadata") or {}).get("superseded_by"):
+                    continue
             meta = h.get("metadata") or {}
-            if meta.get("kind", "core") != "core" or meta.get("superseded_by"):
-                continue
-            out.append({"id": h["id"], "content": h.get("content") or "", "topic": meta.get("topic")})
+            sats = h.get("satellites")
+            if sats is None:
+                sats = (h.get("surroundings") or {}).get("satellites")
+            c = {"id": cid, "content": h.get("content") or "", "topic": meta.get("topic")}
+            if sats:
+                c["satellites"] = int(sats)
+            if via.get(cid):
+                c["via"] = via[cid]
+            out.append(c)
         return out
+
+    def _core_lines(self, candidates: list[dict[str, Any]]) -> str:
+        """The cores as the model reads them: the id, the topic, enough of the
+        text to tell what the core already says, how many episodes hang under
+        it, and one of them when that is how it was found."""
+        n = max(100, int(self._cfg.sleep.core_chars))
+        lines = []
+        for c in candidates:
+            text = c.get("content") or ""
+            line = f"({c['id']})" + (f" [{c['topic']}]" if c.get("topic") else "") + \
+                   f" {text[:n]}" + ("..." if len(text) > n else "")
+            if c.get("satellites"):
+                line += f"  ({c['satellites']} episode(s) already attached)"
+            if c.get("via"):
+                line += f"\n      one of its episodes: {c['via'][:200]}"
+            lines.append(line)
+        return "\n".join(lines) or "(none)"
 
     @staticmethod
     def _steer(brief: Optional[dict[str, Any]], kept: list[str], noise: list[str]) -> str:
@@ -1156,20 +1262,20 @@ class Hippocampus:
     def _draft_cluster(self, topic: Optional[str], entries: list[dict[str, Any]],
                        candidates: list[dict[str, Any]], steer: str = "") -> list[dict[str, Any]]:
         frag_lines = "\n".join(f"[{i}] {(e.get('content') or '')[:400]}" for i, e in enumerate(entries))
-        core_lines = "\n".join(f"({c['id']}) {c['content'][:300]}" for c in candidates) or "(none)"
+        core_lines = self._core_lines(candidates)
         steer_block = f"\n\nSteer:\n{steer}" if steer else ""
         prompt = (
             f"{self.voice.block()}"
             "You are a memory consolidator's drafting worker. Below are short-term memory fragments "
             "about one topic, and the existing long-term CORES closest to them. Propose operations on "
             "long-term memory. Return ONLY JSON in this shape:\n"
-            '{"operations": [{"kind": "new_core|attach|supersede|verbatim", "content": "...", '
+            '{"operations": [{"kind": "new_core|attach|supersede", "content": "...", '
             '"target_core_id": "...", "restated_content": "...", "rationale": "...", "source_indexes": [0, 1]}]}\n'
             "Rules: attach = the fragments are more evidence for an existing core (content = a one-line "
             "episode summary; restated_content only if the core's wording should change). supersede = the "
             "fragments contradict or replace an existing core (content = the new statement). new_core = "
             "nothing existing covers it (content = one durable statement, present tense, no preamble). "
-            "verbatim = only when the exact wording is the point. Use core ids exactly as given and never "
+            "Use core ids exactly as given and never "
             "invent one. To attach to (or supersede) a new_core you propose in this same answer, give "
             '"target_op": <that new_core\'s position in your list, from 0> instead of target_core_id. '
             "source_indexes lists ONLY the fragments that operation's text actually comes from, not "
@@ -1253,6 +1359,15 @@ class Hippocampus:
             kind = str(raw.get("kind", "")).strip().lower()
             if kind not in OP_KINDS:
                 continue
+            if kind == "verbatim":
+                # WORD FOR WORD IS THE REVIEWER'S CALL, NOT THE WORKER'S. A
+                # verbatim core exists because the main model marked a memory
+                # (preserve_memory_verbatim): 'I want this word for word, like
+                # a promise, an important moment' (Chad, 2 Oct 2026). Those
+                # are made in _propose with no model at all. A worker that
+                # picks the kind itself writes a blend and calls it exact
+                # (seen live the same day); what it wrote is a new core.
+                kind = "new_core"
             idxs = []
             for i in (raw.get("source_indexes") or []):
                 try:
@@ -1395,7 +1510,8 @@ class Hippocampus:
                 self._capture = []
                 failures = len(self._model_failures)
                 self._withdrawn = 0
-                new_ops = self._redraft(self._resolve_target_ops(denied, d), made=self._chain_cores(chain))
+                new_ops = self._redraft(self._resolve_target_ops(denied, d), made=self._chain_cores(chain),
+                                        draft_ops=d.get("operations") or [])
                 if self._withdrawn:
                     report.setdefault("withdrawn", {})[cluster_id] = self._withdrawn
                 if not new_ops:
@@ -1447,8 +1563,8 @@ class Hippocampus:
     def _resolve_target_ops(denied: list[dict[str, Any]], d: dict[str, Any]) -> list[dict[str, Any]]:
         """A denied op that named target_op (a new_core in its draft): if that
         core was approved it exists now, and it is the op's target; if not,
-        the op has no target and the redraft must find one. A redraft never
-        sends target_op - its ops are the only ones in their draft."""
+        the op has no target and the redraft must find one (it may name the
+        redraft of that core: see _link_redrafts)."""
         ops = d.get("operations") or []
         out = []
         for op in denied:
@@ -1474,15 +1590,65 @@ class Hippocampus:
                                  "content": op.get("edited_content") or op.get("content") or ""})
         return made
 
+    REDRAFT_RULES = (
+        "You are a memory consolidator's drafting worker. An operation you proposed on long-term memory "
+        "was DENIED by the reviewer: the main model, whose memories these are, and who was there. THE "
+        "CRITIQUE IS TRUE. Do not argue with it, soften it or explain it back: do exactly what it says.\n"
+        "- If the critique gives the wording, the facts or a list of what to say, THAT is your content: "
+        "write it out as the memory, complete.\n"
+        "- If it names the kind (attach, new_core, supersede), use that kind.\n"
+        "- If it names where the operation belongs - a core id, or another operation in this draft "
+        "('op 7', 'target_op 7') - put it there: target_core_id for a core id from the lists below, "
+        "exactly as given; \"target_op\": 7 for an operation the list below says is being redrafted.\n"
+        "- If it says withdraw, a duplicate, already covered, or not true: withdraw.\n"
+        "- Where the critique is silent, keep the kind and the target. A wrong target is not a reason to "
+        "withdraw. new_core has no target. Never invent a core id.\n"
+        "Return ONLY JSON, one of:\n"
+        '{"kind": "new_core|attach|supersede", "target_core_id": "...", "content": "...", "rationale": "..."}\n'
+        '{"withdraw": true, "rationale": "..."}\n'
+        'EVERY ANSWER THAT IS NOT A WITHDRAWAL MUST HAVE "content": the text of the memory itself, as it '
+        "should be kept. The rationale is one short sentence about what you changed; it is not the memory, "
+        "and a memory written only there is lost.\n\n")
+
+    @staticmethod
+    def _ops_mentioned(critique: Optional[str]) -> list[int]:
+        """Operations of the same draft the critique speaks of by number."""
+        seen: list[int] = []
+        for m in re.finditer(r"\b(?:target_op|ops?)\s*#?\s*(\d{1,3})\b", critique or "", flags=re.I):
+            n = int(m.group(1))
+            if n not in seen:
+                seen.append(n)
+        return seen
+
     def _redraft(self, denied: list[dict[str, Any]],
-                 made: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
+                 made: Optional[list[dict[str, Any]]] = None,
+                 draft_ops: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
         if not self.model_configured:
             self._log("denied operations need a model to redraft; none configured")
             return []
         shorts = {s["id"]: s for s in self._mem.shorts(limit=self._cfg.sleep.max_entries_per_run)}
+        # The other operations of the draft, as a critique refers to them: 'attach
+        # with target_op 7', 'the core op 8 just landed'. Approved ones are
+        # cores now; denied ones are being redrafted beside this one.
+        by_index = {int(o.get("index", i)): o for i, o in enumerate(draft_ops or [])}
+        op_cores = {i: o["long_term_id"] for i, o in by_index.items()
+                    if o.get("status") == "approved" and o.get("long_term_id")}
+        pending = {int(o["index"]) for o in denied if o.get("index") is not None}
         out: list[dict[str, Any]] = []
         for op in denied:
             src = [shorts[i] for i in (op.get("source_short_ids") or []) if i in shorts]
+            if op.get("kind") == "verbatim":
+                if any((x.get("metadata") or {}).get("verbatim") for x in src):
+                    # The reviewer marked it word for word, and then denied the
+                    # operation. Its words are not the worker's to change, and
+                    # the same words again would be denied again: it leaves
+                    # the chain and the memory stays, still marked.
+                    self._withdrawn += 1
+                    self._log(f"operation {op.get('index')}: a verbatim the reviewer marked and then denied; "
+                              "not reworded, left in short-term")
+                    continue
+                # chosen by an earlier worker, not marked by anyone: an ordinary operation
+                op = {**op, "kind": "new_core"}
             # Approving an operation promotes its short-terms (Memory archives
             # them), and siblings often share them: approve op 4 and the denied
             # op 3 beside it loses its fragments. Seen live 27 Sept 2026 - the
@@ -1491,7 +1657,7 @@ class Hippocampus:
             # the previous content are what a redraft works from; the fragments
             # were context. Redraft without them; the op keeps its source ids.
             if src:
-                frag_lines = "\n".join(f"- {(s.get('content') or '')[:400]}" for s in src)
+                frag_lines = "\n".join(f"- [{s['id'][:8]}] {(s.get('content') or '')[:400]}" for s in src)
             else:
                 frag_lines = ("- (none left: an approved operation in this draft already promoted them; "
                               "work from the previous content and the critique)")
@@ -1509,35 +1675,65 @@ class Hippocampus:
             target = op.get("target_core_id")
             if target and target not in {c["id"] for c in candidates}:
                 candidates.append({"id": target, "content": "(the core the denied operation targets)", "topic": None})
-            core_lines = "\n".join(f"({c['id']}) {c['content'][:300]}" for c in candidates) or "(none)"
+            # A CORE THE CRITIQUE NAMES IS A CORE TO SHOW. The reviewer wrote
+            # 'attach to core 4e90f3c3...' and the redraft did - and was refused
+            # for naming a core it had not been shown (six times on 2 Oct 2026).
+            shown = {c["id"] for c in candidates}
+            for cid in re.findall(r"\b[0-9a-f]{32}\b", op.get("critique") or ""):
+                if cid not in shown:
+                    core = self._mem.core(cid)
+                    if core and (core.get("metadata") or {}).get("kind", "core") == "core":
+                        candidates.append({"id": cid, "content": core.get("content") or "",
+                                           "topic": (core.get("metadata") or {}).get("topic")})
+                        shown.add(cid)
+            mentioned = [n for n in self._ops_mentioned(op.get("critique")) if n != op.get("index")]
+            sib_lines = []
+            for n in mentioned:
+                o = by_index.get(n)
+                if o is None:
+                    continue
+                said = (o.get("edited_content") or o.get("content") or "")[:160]
+                if n in op_cores:
+                    sib_lines.append(f"op {n}: approved - it is core ({op_cores[n]}) now: {said}")
+                    if op_cores[n] not in shown:
+                        candidates.append({"id": op_cores[n], "content": o.get("edited_content") or o.get("content") or "",
+                                           "topic": o.get("topic")})
+                        shown.add(op_cores[n])
+                elif n in pending:
+                    sib_lines.append(f"op {n}: denied too and being redrafted now; to put this operation on the "
+                                     f"core it becomes, answer \"target_op\": {n} (no target_core_id). It said: {said}")
+            sib_block = ("Other operations in this draft that the critique mentions:\n" + "\n".join(sib_lines) + "\n\n"
+                         if sib_lines else "")
+            core_lines = self._core_lines(candidates)
             target_line = target or ("(none - it pointed at a new core in its draft that was not approved)"
                                      if op.get("_target_op_denied") else "(none)")
             prompt = (
-                f"{self.voice.block()}"
-                "You are a memory consolidator's drafting worker. A proposed operation on long-term "
-                "memory was DENIED by the reviewer. Address the critique. Return ONLY JSON, one of:\n"
-                '{"content": "...", "kind": "new_core|attach|supersede", "target_core_id": "...", '
-                '"rationale": "..."}\n'
-                '{"withdraw": true, "rationale": "..."}\n'
-                "Keep the kind and target unless the critique says they are wrong. A wrong target is not a "
-                "reason to withdraw: move the operation to the right core below, or make it a new_core if "
-                "none of them fits. Withdraw only when the critique says the content should not be in "
-                "memory at all - already covered, or not true. attach and supersede need a target_core_id "
-                "from the cores below, exactly as given; never invent one. new_core has no target. Put the "
-                "operation's text in content.\n\n"
-                f"Operation kind: {op.get('kind')}\nTarget core: {target_line}\n"
-                f"Topic: {op.get('topic') or 'untagged'}\n"
-                f"Source fragments:\n{frag_lines}\n\nExisting cores:\n{core_lines}\n\n"
-                f"Previous content: {op.get('content')}\nCritique: {op.get('critique')}\n\nJSON:")
+                f"{self.voice.block()}{self.REDRAFT_RULES}"
+                f"THE CRITIQUE:\n{op.get('critique')}\n\n"
+                f"What you proposed (operation {op.get('index')}):\n"
+                f"kind: {op.get('kind')}\ntarget core: {target_line}\ntopic: {op.get('topic') or 'untagged'}\n"
+                f"content: {op.get('content')}\n\n"
+                f"Source fragments (the critique may name them by the id in brackets):\n{frag_lines}\n\n"
+                f"{sib_block}Existing cores:\n{core_lines}\n\n"
+                f"The critique, once more: {op.get('critique')}\n\nJSON:")
             denied_op = {k: op.get(k) for k in ("index", "kind", "topic", "target_core_id", "content", "critique")}
             call: dict[str, Any] = {"stage": "redraft", "topic": op.get("topic"), "prompt": prompt,
                                     "entries": [{"id": s["id"], "content": s.get("content") or ""} for s in src],
-                                    "candidates": candidates, "denied": denied_op}
+                                    "candidates": candidates, "denied": denied_op,
+                                    "op_cores": {str(k): v for k, v in op_cores.items()}, "pending": sorted(pending)}
             if self._capture is not None:
                 self._capture.append(call)
             t0 = time.time()
             try:
                 raw = self._call_model(prompt)
+                if self._lacks_content(raw):
+                    # The memory written into the rationale and "content" left out:
+                    # seven of thirty redrafts on 2 Oct 2026, every one of them
+                    # obeying its critique. Ask once more, saying exactly that.
+                    call["first_answer"] = raw
+                    raw = self._call_model(
+                        prompt + raw + "\n\nThat answer has no \"content\", so there is nothing to keep. Give the "
+                        "same answer again as JSON, with \"content\" holding the full text of the memory.\n\nJSON:")
             except ModelUnavailable:
                 raise                                      # tend records it; the chain waits for the model
             except Exception as e:  # noqa: BLE001
@@ -1545,7 +1741,7 @@ class Hippocampus:
                 self._model_failure("redraft", op.get("topic"), str(e))
                 continue
             call.update(answer=raw, seconds=round(time.time() - t0, 2))
-            new = self._parse_redraft(raw, denied_op, call["entries"], candidates)
+            new = self._parse_redraft(raw, denied_op, call["entries"], candidates, op_cores, pending)
             if new is not None and new.get("withdrawn"):
                 call.update(ops=[], withdrawn=True)
                 self._withdrawn += 1
@@ -1557,7 +1753,7 @@ class Hippocampus:
                 self._model_failure("redraft", op.get("topic"), "the model's answer was not the JSON asked for: "
                                     + repr((raw or "")[:160]))
                 continue
-            if new is None and self._invented_target(raw, candidates):
+            if new is None and self._invented_target(raw, candidates, op_cores, pending):
                 # A target it was not shown: a failure, like bad JSON - the next
                 # tend asks again rather than landing a guess or ending the chain.
                 call["error"] = "a target core it was not shown"
@@ -1578,10 +1774,69 @@ class Hippocampus:
                 new["evidence_count"] = max(1, len(new["source_short_ids"]))
             if new:
                 out.append(new)
+        return self._submittable(self._link_redrafts(out))
+
+    def _link_redrafts(self, out: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """An operation that asked to sit on the core ANOTHER redraft in this
+        batch creates ('target_op 7', where op 7 was denied too): point it at
+        that redraft's place in the new draft. If op 7 did not come back as a
+        new core, the operation stands as a new core of its own - it is kept
+        and the reviewer can place it - rather than being lost."""
+        where = {o["redraft_of"]: i for i, o in enumerate(out)
+                 if o.get("redraft_of") is not None and o["kind"] == "new_core"}
+        for o in out:
+            n = o.pop("_wants_op", None)
+            if n is None:
+                continue
+            if n in where and out[where[n]] is not o:
+                o["target_op"] = where[n]
+            else:
+                self._log(f"operation {o.get('redraft_of')}: op {n} did not come back as a new core; kept as a new core")
+                o["kind"], o["target_core_id"] = "new_core", None
         return out
 
+    def _lacks_content(self, raw: str) -> bool:
+        parsed = self._json_from(raw)
+        return (isinstance(parsed, dict) and parsed.get("withdraw") is not True
+                and not str(parsed.get("content") or parsed.get("restated_content") or "").strip())
+
+    @staticmethod
+    def _target_of(parsed: dict[str, Any], candidates: list[dict[str, Any]],
+                   op_cores: Optional[dict[int, str]] = None,
+                   pending: Optional[set[int]] = None) -> tuple[Optional[str], Optional[int]]:
+        """Where a redraft answer points: (core id, None), (None, the index of
+        an operation being redrafted beside it), or (None, None) when it names
+        nothing real. A core id may be given whole or as its first 8+
+        characters, the way a critique writes it; an operation of the draft by
+        number, as target_op or (seen live) as the target_core_id itself."""
+        ids = [c["id"] for c in candidates]
+        t = parsed.get("target_core_id")
+        if isinstance(t, str):
+            t = t.strip()
+            if t in ids:
+                return t, None
+            if len(t) >= 8:
+                near = [i for i in ids if i.startswith(t)]
+                if len(near) == 1:
+                    return near[0], None
+        n: Optional[int] = None
+        for v in (parsed.get("target_op"), t):
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, int) or (isinstance(v, str) and v.strip().isdigit() and len(v.strip()) <= 3):
+                n = int(v)
+                break
+        if n is not None:
+            if n in (op_cores or {}):
+                return (op_cores or {})[n], None
+            if n in (pending or set()):
+                return None, n
+        return None, None
+
     def _parse_redraft(self, raw: str, op: dict[str, Any], src: list[dict[str, Any]],
-                       candidates: Optional[list[dict[str, Any]]] = None) -> Optional[dict[str, Any]]:
+                       candidates: Optional[list[dict[str, Any]]] = None,
+                       op_cores: Optional[dict[int, str]] = None,
+                       pending: Optional[set[int]] = None) -> Optional[dict[str, Any]]:
         """A redraft answer turned into the operation that replaces the
         denied one; {"withdrawn": True, ...} when the worker drops it; None
         when there is nothing usable. Shared with a replay.
@@ -1589,8 +1844,9 @@ class Hippocampus:
         The kind may change among new_core / attach / supersede (a verbatim op
         stays verbatim: its wording is the person's). The target may change to
         a core the worker was shown - the candidates, which include the old
-        target - and is None for new_core. A packet from before retargeting
-        has no candidates: the old kind and target hold."""
+        target and any core the critique named - or to another operation of
+        the draft (see _target_of), and is None for new_core. A packet from
+        before retargeting has no candidates: the old kind and target hold."""
         parsed = self._json_from(raw)
         if not isinstance(parsed, dict):
             return None
@@ -1599,15 +1855,21 @@ class Hippocampus:
             return {"withdrawn": True, "rationale": rationale}
         kind = op.get("kind")
         target = op.get("target_core_id")
+        wants: Optional[int] = None
         if candidates is not None and kind != "verbatim":
             asked = str(parsed.get("kind") or kind or "").strip().lower()
             if asked in ("new_core", "attach", "supersede"):
                 kind = asked
             if kind == "new_core":
                 target = None
-            else:
-                target = parsed.get("target_core_id") or target
+            elif parsed.get("target_core_id") in (None, "") and parsed.get("target_op") is None:
                 if target not in {c["id"] for c in candidates}:
+                    return None                                # said nothing, and the old target is not a core shown
+            else:
+                target, wants = self._target_of(parsed, candidates, op_cores, pending)
+                if wants is not None and wants == op.get("index"):
+                    wants = None                               # itself is not a place to put it
+                if target is None and wants is None:
                     return None                                # invented: see _invented_target
         content = str(parsed.get("content") or "").strip()
         if not content:
@@ -1620,26 +1882,33 @@ class Hippocampus:
         if not content:
             return None
         # A REDRAFT NEVER REWORDS A CORE. restated_content replaces the target
-        # core's wording when the attach is approved, and a redraft sees each
-        # core only as its first 300 characters, so it cannot write the whole
-        # core again. What it wrote there was the episode's own text, and
-        # approving it overwrote two cores with their satellites (1 Oct 2026).
-        # The attach lands as a satellite; the core keeps its words.
+        # core's wording when the attach is approved, and a redraft cannot be
+        # trusted to write the whole core again. What it wrote there was the
+        # episode's own text, and approving it overwrote two cores with their
+        # satellites (1 Oct 2026). The attach lands as a satellite; the core
+        # keeps its words.
         new = {"kind": kind, "content": content, "topic": op.get("topic"), "target_core_id": target,
                "source_short_ids": [s["id"] for s in src], "evidence_count": len(src),
                "rationale": rationale}
+        if wants is not None:
+            new["_wants_op"] = wants                       # resolved by _link_redrafts
         if op.get("index") is not None:
             new["redraft_of"] = op["index"]                # the reviewer sees every version of it (get_draft)
         return new
 
-    def _invented_target(self, raw: str, candidates: list[dict[str, Any]]) -> bool:
-        """The redraft named an attach / supersede target outside the cores it
-        was shown."""
+    def _invented_target(self, raw: str, candidates: list[dict[str, Any]],
+                         op_cores: Optional[dict[int, str]] = None,
+                         pending: Optional[set[int]] = None) -> bool:
+        """The redraft named an attach / supersede target that is none of the
+        cores it was shown and no operation of its draft."""
         parsed = self._json_from(raw)
         if not isinstance(parsed, dict) or parsed.get("withdraw") is True:
             return False
-        t = parsed.get("target_core_id")
-        return bool(t) and t not in {c["id"] for c in candidates}
+        if str(parsed.get("kind") or "").strip().lower() == "new_core":
+            return False                                   # a new core has no target; a stray one is ignored
+        if parsed.get("target_core_id") in (None, "") and parsed.get("target_op") is None:
+            return False
+        return self._target_of(parsed, candidates, op_cores, pending) == (None, None)
 
     # ── replay ────────────────────────────────────────────────────────────
     def _save_replay(self, draft_id: Optional[str], **fields: Any) -> None:

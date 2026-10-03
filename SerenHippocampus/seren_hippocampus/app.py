@@ -225,10 +225,12 @@ def create_app(config: Optional[HippocampusConfig] = None,
 
     @app.get("/history")
     async def history(request: Request):
-        """The last sleeps and tends this service ran, newest first."""
+        """The last sleeps and tends this service ran, newest first. A tend
+        that found nothing to do is not listed; quiet_tends counts them."""
         h: Hippocampus = request.app.state.hippocampus
         rows = list(h.state.get("history") or [])
-        return {"count": len(rows), "entries": list(reversed(rows))}
+        return {"count": len(rows), "entries": list(reversed(rows)),
+                "quiet_tends": h.state.get("quiet_tends") or {"count": 0}}
 
     @app.get("/queue")
     async def queue(request: Request):
