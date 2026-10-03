@@ -216,8 +216,28 @@ async function runReplay() {
     finally { btn.disabled = false; }
 }
 
+// History shows the last few of each thing, with a button for more, so the
+// page is short and the events are not buried under a day of tends (the user,
+// 2 Oct 2026). How many are open is kept across the page's refreshes.
+const SHOW_STEP = 5;
+const shown = { sleep: SHOW_STEP, tend: SHOW_STEP, events: SHOW_STEP };
+let lastHist = { entries: [] }, lastEvents = { entries: [] };
+
+function showMore(what) {
+    shown[what] += SHOW_STEP * 2;
+    renderHistory(lastHist);
+    renderEvents(lastEvents);
+}
+
+function moreButton(what, total) {
+    const left = total - shown[what];
+    return left > 0 ? `<button class="btn more" onclick="showMore('${what}')">show ${Math.min(left, SHOW_STEP * 2)} more (${left} older)</button>` : '';
+}
+
 function renderEvents(ev) {
-    const rows = ev.entries || [];
+    lastEvents = ev;
+    const all = ev.entries || [];
+    const rows = all.slice(0, shown.events);
     const el = $('events-list');
     if (!el) return;
     el.innerHTML = rows.length ? rows.map(e => `<div class="entry ${e.event === 'sleep_failed' ? 'bad' : ''}">
@@ -230,16 +250,41 @@ function renderEvents(ev) {
             ${ev.webhook ? `<span class="badge ${e.delivered ? 'approved' : (e.delivered === false ? 'denied' : '')}">${e.delivered ? 'sent' : (e.delivered === false ? 'not sent' : 'kept')}</span>` : ''}</div>
         ${e.error ? `<div class="content">${escapeHtml(e.error)}</div>` : ''}
         ${e.delivery_error ? `<div class="critique">webhook: ${escapeHtml(e.delivery_error)}</div>` : ''}
-    </div>`).join('') : `<div class="empty">Nothing has happened yet.</div>`;
+    </div>`).join('') + moreButton('events', all.length) : `<div class="empty">Nothing has happened yet.</div>`;
+}
+
+function runRow(r) {
+    const did = r.kind === 'sleep'
+        ? `<span>${escapeHtml(r.operations ?? 0)} op(s) proposed, ${escapeHtml(r.purged ?? 0)} purged</span>`
+        : `<span>${escapeHtml(r.resubmitted ?? 0)} resubmitted, ${escapeHtml(r.closed ?? 0)} closed, ${escapeHtml(r.ended ?? 0)} ended${r.deferred ? `, ${escapeHtml(r.deferred)} waiting` : ''}</span>`;
+    return `<div class="entry ${r.error ? 'bad' : ''}">
+        <div class="meta"><span class="badge ${r.error ? 'denied' : 'approved'}">${escapeHtml(r.kind)}</span><span>${escapeHtml(fmtTs(r.finished_at))}</span>
+            <span>${escapeHtml(r.duration_seconds ?? '-')}s</span>${did}</div>
+        ${r.error ? `<div class="content"><b>Stopped:</b> ${escapeHtml(r.error)}</div>` : ''}
+    </div>`;
+}
+
+// A tend with nothing to do in it - nothing redrafted, closed, ended or left
+// waiting, and no error. The service no longer records these; a state file
+// from before it stopped still holds some.
+function quietTend(r) {
+    return r.kind === 'tend' && !r.error && !(r.resubmitted || r.closed || r.ended || r.deferred);
 }
 
 function renderHistory(hist) {
-    const rows = (hist.entries || []);
-    $('history-list').innerHTML = rows.length ? rows.map(r => `<div class="entry ${r.error ? 'bad' : ''}">
-        <div class="meta"><span class="badge ${r.error ? 'denied' : 'approved'}">${escapeHtml(r.kind)}</span><span>${escapeHtml(fmtTs(r.finished_at))}</span>
-            <span>${escapeHtml(r.duration_seconds ?? '-')}s</span>${r.kind === 'sleep' ? `<span>${escapeHtml(r.operations ?? 0)} op(s) proposed, ${escapeHtml(r.purged ?? 0)} purged</span>` : `<span>${escapeHtml(r.resubmitted ?? 0)} resubmitted, ${escapeHtml(r.ended ?? 0)} chain(s) ended</span>`}</div>
-        ${r.error ? `<div class="content"><b>Stopped:</b> ${escapeHtml(r.error)}</div>` : ''}
-    </div>`).join('') : `<div class="empty">Nothing has run yet.</div>`;
+    lastHist = hist;
+    const all = hist.entries || [];
+    const sleeps = all.filter(r => r.kind === 'sleep');
+    const tends = all.filter(r => r.kind === 'tend' && !quietTend(r));
+    const quiet = ((hist.quiet_tends || {}).count || 0) + all.filter(quietTend).length;
+    const lastQuiet = (hist.quiet_tends || {}).last_at;
+    $('history-list').innerHTML = sleeps.length
+        ? sleeps.slice(0, shown.sleep).map(runRow).join('') + moreButton('sleep', sleeps.length)
+        : `<div class="empty">No sleep has run yet.</div>`;
+    $('tends-list').innerHTML =
+        (tends.length ? tends.slice(0, shown.tend).map(runRow).join('') + moreButton('tend', tends.length)
+                      : `<div class="empty">No tend has had anything to do yet.</div>`) +
+        (quiet ? `<p class="hint">${quiet} tend${quiet === 1 ? '' : 's'} found nothing to do and ${quiet === 1 ? 'is' : 'are'} not listed${lastQuiet ? ` (the last ${escapeHtml(fmtTs(lastQuiet))})` : ''}.</p>` : '');
 }
 
 // ----------------------------------------------------------------------------

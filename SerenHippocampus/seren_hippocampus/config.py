@@ -159,8 +159,14 @@ class SleepConfig(BaseModel):
     # endless draft/critique loop). Held to 1-10: 1 = one draft, no redraft.
     max_attempts: int = 3
     # How many existing cores to show the model per cluster as attach /
-    # supersede candidates.
-    candidate_cores: int = 5
+    # supersede candidates, and how much of each one's text. 5 cores at 300
+    # characters was too little to see that a core already said something, or
+    # that it was about something else (2 Oct 2026: of 30 first-round
+    # denials, about 15 were a wrong core or a repeat of one). Each core costs
+    # about core_chars / 4 tokens of the model's context; fragments, rules and
+    # the answer (model.max_tokens) share the rest.
+    candidate_cores: int = 8
+    core_chars: int = 600
     # Sleep at a wall-clock time instead of every interval_seconds: "03:30"
     # (local time, HH:MM). Empty keeps the drifting interval. Either way a
     # process that boots overdue sleeps after warmup_seconds, not a full

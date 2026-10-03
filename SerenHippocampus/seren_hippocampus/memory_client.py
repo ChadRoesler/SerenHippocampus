@@ -66,6 +66,28 @@ class MemoryClient:
         })
         return [h for h in (got.get("hits") or []) if h.get("tier") == "long"]
 
+    def search_long(self, query: str, n: int = 5) -> list[dict[str, Any]]:
+        """Long-term rows near a query, SATELLITES INCLUDED. A satellite is an
+        episode, which is what a fragment looks like, so it is often the
+        closest thing in the store - and it names its core (metadata.core_id)."""
+        got = self._req("POST", "/search", json={
+            "query": query[:2000], "n_results": max(1, min(int(n), 50)),
+            "include_short": False, "include_near": False, "include_long": True,
+            "include_satellites": True,
+        })
+        return [h for h in (got.get("hits") or []) if h.get("tier") == "long"]
+
+    def core(self, core_id: str) -> Optional[dict[str, Any]]:
+        """One core with its satellite count, or None."""
+        try:
+            got = self._req("GET", f"/long/{core_id}/satellites")
+        except MemoryError:
+            return None
+        core = got.get("core")
+        if not isinstance(core, dict):
+            return None
+        return {**core, "satellites": int(got.get("count") or 0)}
+
     def drafts(self, status: Optional[str] = None, limit: int = 200) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"limit": limit}
         if status:

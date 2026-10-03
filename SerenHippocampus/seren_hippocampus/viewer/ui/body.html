@@ -43,9 +43,13 @@
 </section>
 
 <section class="view" id="history">
-    <p class="hint">The last sleeps and tends this service ran, newest first, with what each one did or why it stopped.</p>
+    <p class="hint">The last few of each, newest first; "show more" opens older ones.</p>
+    <h3 class="sub">Sleeps</h3>
     <div id="history-list"></div>
     <h3 class="sub">Events</h3>
     <p class="hint">What the service told the world: a draft submitted, a sleep that failed, a chain that ended, a purge. With a webhook configured each one says whether it was delivered.</p>
     <div id="events-list"></div>
+    <h3 class="sub">Tends</h3>
+    <p class="hint">Only the tends that did something: redrafted what was denied, closed a chain that landed, or left one waiting. The loop tends every few minutes and most find nothing to do.</p>
+    <div id="tends-list"></div>
 </section>
