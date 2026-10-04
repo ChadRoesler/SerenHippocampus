@@ -64,6 +64,39 @@ def create_app(config: Optional[HippocampusConfig] = None,
         # history, the replay packets. Not the logs, and not the snapshots.
         from seren_sinew.stores import Store, StoreKeeper, snapshot_loop
         state_dir = cfg.resolved_state_path().resolve().parent
+        def _state_check(restored, manifest, snapshot_dir) -> dict:
+            """A rehearsal's look at a restored COPY of the state folder:
+            the state file and every replay packet parse, and the voice card
+            is at the version the manifest recorded."""
+            import json
+            d = restored["state"]
+            problems: list[str] = []
+
+            def read(p):
+                try:
+                    return json.loads(p.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as e:
+                    problems.append(f"{p.relative_to(d).as_posix()}: {type(e).__name__}: {e}")
+                    return None
+
+            sf = d / cfg.resolved_state_path().name
+            state = read(sf) if sf.is_file() else None
+            vf = d / "voice.json"
+            voice = read(vf) if vf.is_file() else None
+            versions = [v for v in ((voice or {}).get("versions") or []) if isinstance(v, dict) and v.get("text")] \
+                if isinstance(voice, dict) else []
+            card = int(versions[-1].get("version") or 0) if versions else 0
+            want = manifest.get("voice_card_version")
+            if want is not None and int(want) != card:
+                problems.append(f"voice card: the manifest says version {want}, the restored copy is at {card}")
+            replays = sorted((d / "replays").glob("*.json")) if (d / "replays").is_dir() else []
+            parsed = sum(1 for p in replays if read(p) is not None)
+            return {"state_file": sf.is_file() and state is not None,
+                    "history": len((state or {}).get("history") or []) if isinstance(state, dict) else 0,
+                    "events": len((state or {}).get("events") or []) if isinstance(state, dict) else 0,
+                    "voice_card_version": card, "voice_card_versions": len(versions),
+                    "replays": parsed, "problems": problems}
+
         app.state.stores = StoreKeeper(
             "seren-hippocampus",
             lambda: [Store("state", "dir", str(state_dir),
@@ -71,6 +104,7 @@ def create_app(config: Optional[HippocampusConfig] = None,
                            exclude=("*.log", "*.partial", "*.tmp"))],
             cfg.resolved_backup_dir(),
             extra=lambda: {"version": __version__, "voice_card_version": app.state.hippocampus.voice.version()},
+            check=_state_check,
             keep_daily=cfg.backup.keep_daily, keep_weekly=cfg.backup.keep_weekly,
             log=lambda m: print(f"[seren-hippocampus] {m}")) if cfg.backup.enabled else None
         if app.state.stores is not None and cfg.backup.every_hours > 0:
