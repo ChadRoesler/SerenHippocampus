@@ -46,6 +46,19 @@ def create_app(config: Optional[HippocampusConfig] = None,
         mem = memory_client or MemoryClient(cfg.memory.url, bearer=cfg.memory.resolve_bearer(),
                                             timeout=cfg.memory.timeout_seconds)
         app.state.memory = mem
+        # A restore, when the config asks for one (backup.restore_from +
+        # restore_reason): into an empty state folder only (logs do not
+        # count), before the state is read. Refused = the service does not
+        # start. No route does this.
+        if (cfg.backup.restore_from or "").strip():
+            from seren_sinew.stores import Store as _Store, restore_at_startup
+            restore_at_startup(
+                "seren-hippocampus",
+                [_Store("state", "dir", str(cfg.resolved_state_path().resolve().parent),
+                        exclude=("*.log", "*.partial", "*.tmp"))],
+                cfg.backup.restore_from, cfg.backup.restore_reason,
+                cfg.resolved_backup_dir() / "seren-hippocampus",
+                log=lambda m: print(f"[seren-hippocampus] {m}"))
         app.state.hippocampus = Hippocampus(cfg, mem)
         # "is there a newer seren-hippocampus" - core in Meninges, always built.
         from seren_meninges.updates import UpdateChecker

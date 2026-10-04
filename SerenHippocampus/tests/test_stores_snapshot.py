@@ -78,3 +78,26 @@ def test_a_rehearsal_reads_the_copy_back(memory, bridge, hcfg):
         sid = tc.post("/stores/snapshot").json()["snapshot"]["id"]
         rep = tc.post(f"/stores/snapshots/{sid}/rehearse").json()
         assert rep["ok"] is False and rep["problems"][0].startswith("replays/bad.json"), rep
+
+
+def test_a_new_box_restores_its_state_at_startup(memory, bridge, hcfg, tmp_path):
+    """backup.restore_from + restore_reason, into an empty state folder only
+    (seren_sinew.stores.restore_at_startup). 3 Oct 2026."""
+    hcfg.backup.every_hours = 0
+    hcfg.voice.enabled = True
+    hcfg.backup.dir = str(tmp_path / "old-backups")
+    with TestClient(create_app(hcfg, memory_client=MemoryClient("http://memory.test", transport=bridge))) as tc:
+        tc.app.state.hippocampus.voice.set("the card", why="a test")
+        tc.post("/tend")
+        snap = tc.post("/stores/snapshot").json()["snapshot"]
+    new = hcfg.model_copy(deep=True)
+    (tmp_path / "new").mkdir()
+    (tmp_path / "new" / "model.log").write_text("a log is not state", encoding="utf-8")
+    new.sleep.state_path = str(tmp_path / "new" / "state.json")
+    new.backup.dir = str(tmp_path / "new" / "backups")
+    new.backup.restore_from, new.backup.restore_reason = snap["path"], "moving to the cluster"
+    with TestClient(create_app(new, memory_client=MemoryClient("http://memory.test", transport=bridge))) as tc:
+        assert tc.app.state.hippocampus.voice.version() == 1 and (tmp_path / "new" / "state.json").is_file()
+        tc.app.state.hippocampus.voice.set("the card, on the new box", why="a test")
+    with TestClient(create_app(new, memory_client=MemoryClient("http://memory.test", transport=bridge))) as tc:
+        assert tc.app.state.hippocampus.voice.version() == 2, "the second start passes the key by"
