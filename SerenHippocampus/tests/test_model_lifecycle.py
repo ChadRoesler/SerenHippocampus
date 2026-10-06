@@ -180,6 +180,105 @@ def test_the_observatory_starts_and_stops_a_registered_service(memory, make_hipp
     assert calls[-1] == ("stop", "Bearer obs-secret") and up["on"] is False
 
 
+def test_in_a_cluster_the_model_comes_through_lodestar(memory, make_hippo):
+    """Design note: hippocampus => Lodestar => Observatory => start llama
+    => the Observatory waits until llama is up => Lodestar tells the
+    hippocampus it is ready, and where. One call; the lease is released when
+    the hippocampus is done."""
+    calls: list[tuple[str, dict, str]] = []
+    up = {"on": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "192.0.2.101" and request.url.path == "/health":
+            return httpx.Response(200 if up["on"] else 503)
+        if request.url.host == "lodestar.test" and request.url.path.startswith("/api/v1/service/llama/"):
+            verb = request.url.path.rsplit("/", 1)[-1]
+            body = __import__("json").loads(request.content)
+            calls.append((verb, body, request.headers.get("authorization", "")))
+            if verb == "ensure":
+                up["on"] = True
+                return httpx.Response(200, json={"ok": True, "service": "llama", "node": "node-a", "ready": True,
+                                                 "started": True, "base_url": "http://192.0.2.101:8090",
+                                                 "port": 8090, "waited_seconds": 41.0, "holders": [body["holder"]]})
+            up["on"] = False
+            return httpx.Response(200, json={"ok": True, "service": "llama", "node": "node-a", "stopped": True, "holders": []})
+        return httpx.Response(404)
+
+    h = make_hippo()
+    h._cfg.model.url = "http://placeholder.invalid/v1"
+    lc = h._cfg.model.lifecycle
+    lc.lodestar_url = "http://lodestar.test"
+    lc.lodestar_token = "lode-secret"
+    lc.ready_timeout_seconds = 30
+    lc.poll_seconds = 0.05
+    lc.keep_warm_seconds = 0
+    h.model._transport = httpx.MockTransport(handler)
+    assert h.model.managed and h.model.via_lodestar, "naming lodestar_url is the request"
+
+    h.model.ensure_up()
+    verb, body, auth = calls[0]
+    assert (verb, auth) == ("ensure", "Bearer lode-secret")
+    assert body["holder"] == "seren-hippocampus" and body["wait_seconds"] == 30.0
+    assert h._cfg.model.url == "http://192.0.2.101:8090/v1", "the answer says where the model is"
+    assert h.model.health_url == "http://192.0.2.101:8090/health" and h.model.state == "up"
+    h.model.ensure_up()
+    assert len(calls) == 1, "holding the lease and the model answering: nothing more to ask"
+
+    assert h.model.maybe_stop() is True
+    assert calls[-1][0] == "release" and calls[-1][1]["holder"] == "seren-hippocampus"
+    assert h.model.started_by_us is False and h.model.snapshot()["via"] == "lodestar"
+
+
+def test_lodestar_saying_no_fails_the_start_with_its_reason(memory, make_hippo):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ensure"):
+            return httpx.Response(200, json={"ok": False, "service": "llama", "node": "node-a", "ready": False,
+                                             "error": "llama did not start: model.gguf: no such file"})
+        return httpx.Response(503)
+
+    h = make_hippo()
+    h._cfg.model.url = "http://placeholder.invalid/v1"
+    lc = h._cfg.model.lifecycle
+    lc.lodestar_url = "http://lodestar.test"
+    lc.ready_timeout_seconds = 1
+    lc.poll_seconds = 0.05
+    h.model._transport = httpx.MockTransport(handler)
+    from seren_hippocampus.model_lifecycle import ModelUnavailable
+    with pytest.raises(ModelUnavailable, match="model.gguf: no such file"):
+        h.model.ensure_up()
+    assert h.model.started_by_us is False and h.model.state == "failed"
+
+
+def test_a_model_that_already_answers_is_still_leased_through_lodestar(memory, make_hippo):
+    """Someone else has llama up. The hippocampus must still take a lease, or
+    that someone's release stops the model in the middle of a sleep."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        calls.append(request.url.path.rsplit("/", 1)[-1])
+        return httpx.Response(200, json={"ok": True, "ready": True, "already_running": True, "node": "node-a",
+                                         "base_url": "http://model.test:8090", "holders": ["symposium", "seren-hippocampus"]})
+
+    h = make_hippo()
+    h._cfg.model.url = "http://model.test:8090/v1"
+    h._cfg.model.lifecycle.lodestar_url = "http://lodestar.test"
+    h.model._transport = httpx.MockTransport(handler)
+    h.model.ensure_up()
+    assert calls == ["ensure"] and h.model.started_by_us is True
+
+
+def test_the_local_ways_are_untouched_by_cluster_mode(memory, make_hippo):
+    """A single box keeps starting its own server: a command wins over lodestar_url."""
+    h = make_hippo()
+    lc = h._cfg.model.lifecycle
+    assert h.model.via_lodestar is False and h.model.snapshot()["via"] == "local"
+    lc.lodestar_url = "http://lodestar.test"
+    lc.manage, lc.start = True, "llama-server -m x.gguf"
+    assert h.model.via_lodestar is False, "a local command is the more specific instruction"
+
+
 def test_status_reports_the_model(memory, bridge, hcfg):
     from fastapi.testclient import TestClient
     from seren_hippocampus.app import create_app

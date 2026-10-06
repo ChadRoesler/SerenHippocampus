@@ -82,6 +82,18 @@ class ModelLifecycleConfig(BaseModel):
     observatory_token: str = Field(default="", repr=False)
     observatory_token_env: str = ""
     observatory_token_keyring: str = ""
+    # CLUSTER MODE: ask LODESTAR (seren_sinew.orchestration). It picks the node,
+    # that node's Observatory starts the service and waits until it answers,
+    # and the reply says where the model is - model.url is set from it, so it
+    # need only name a placeholder. Naming lodestar_url turns management on;
+    # the other ways above are untouched and still what a single box uses.
+    lodestar_url: str = ""
+    lodestar_service: str = "llama"
+    lodestar_node: str = ""              # only this node; blank = Lodestar chooses
+    lodestar_holder: str = "seren-hippocampus"   # the name its lease is held in
+    lodestar_token: str = Field(default="", repr=False)
+    lodestar_token_env: str = ""
+    lodestar_token_keyring: str = ""
     # Blank = the model url without /v1, plus /health (llama.cpp answers there).
     health_url: str = ""
     ready_timeout_seconds: int = 240
@@ -103,6 +115,11 @@ class ModelLifecycleConfig(BaseModel):
         return resolve_token(inline=self.observatory_token or None,
                              keyring_ref=self.observatory_token_keyring or None,
                              env_var=self.observatory_token_env or None)
+
+    def resolve_lodestar_token(self) -> str:
+        return resolve_token(inline=self.lodestar_token or None,
+                             keyring_ref=self.lodestar_token_keyring or None,
+                             env_var=self.lodestar_token_env or None)
 
 
 class ModelConfig(BaseModel):

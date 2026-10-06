@@ -28,6 +28,21 @@ Or the node's OBSERVATORY (`observatory_url` + `observatory_service`): the
 model server is a registered service and the Observatory starts and stops it,
 which is what a Jetson wants.
 
+And, for a CLUSTER, LODESTAR (`lodestar_url`, 5 Oct 2026; the messages are
+seren_sinew.orchestration):
+
+    hippocampus ─ensure─▶ Lodestar ─ensure─▶ Observatory ─▶ start llama, wait
+    hippocampus ◀─ ready, and where ─ Lodestar ◀─ ready ─────┘
+    ... the sleep, the redrafts ...
+    hippocampus ─release▶ Lodestar ─▶ stop it, if nobody else holds it
+
+One call, one answer. The hippocampus does not know which node has the model
+or how it is started; the answer carries the address and model.url is set
+from it. It holds a LEASE in its own name for as long as it needs the model,
+so something else that wants the same GPU can see that, and a model someone
+else is also using is not stopped under them. Because the lease is the point,
+this path asks Lodestar even when the model already answers.
+
 A model that will not come up raises ModelUnavailable. The sleep that needed
 it fails and keeps its brief for the next check; it never falls back to a
 mechanical copy of the fragments, which is what a missing model used to do
@@ -95,9 +110,15 @@ class ModelLifecycle:
         return bool(self._lc.server.strip() and self._lc.model_path.strip() and not self._lc.start.strip())
 
     @property
+    def via_lodestar(self) -> bool:
+        """lodestar_url is set, and no local command overrides it."""
+        return bool(self._lc.lodestar_url.strip() and self._lc.lodestar_service.strip()
+                    and not self._lc.start.strip() and not self.built)
+
+    @property
     def managed(self) -> bool:
         # Naming the server and the model file is itself the request to manage.
-        if self.built:
+        if self.built or self.via_lodestar:
             return True
         return bool(self._lc.manage and (self._lc.start.strip() or
                                          (self._lc.observatory_url.strip() and self._lc.observatory_service.strip())))
@@ -123,7 +144,11 @@ class ModelLifecycle:
         """Ready to take a call, or ModelUnavailable. Cheap when it is up."""
         with self._lock:
             self.last_used = time.time()
-            if self.healthy():
+            # Through Lodestar the lease is the point: a model that answers
+            # but that we hold no lease on can be stopped under us by whoever
+            # does, so we ask first and only then take "it answers" as enough.
+            holding = self.started_by_us or not self.via_lodestar
+            if holding and self.healthy():
                 if self.state != "up":
                     self.state = "up"
                 return
@@ -140,11 +165,14 @@ class ModelLifecycle:
     def _start(self) -> None:
         self.state = "starting"
         t0 = time.time()
-        how = "command" if (self._lc.start.strip() or self.built) else "observatory"
+        how = ("command" if (self._lc.start.strip() or self.built)
+               else "lodestar" if self.via_lodestar else "observatory")
         self._log(f"starting the model ({how})")
         try:
             if how == "command":
                 self._start_command()
+            elif how == "lodestar":
+                self._lodestar_ensure()
             else:
                 self._observatory("start")
         except Exception as e:  # noqa: BLE001
@@ -206,6 +234,50 @@ class ModelLifecycle:
         if isinstance(body, dict) and body.get("ok") is False:
             raise RuntimeError(str(body.get("error") or body.get("stderr") or body)[:200])
 
+    # ── through Lodestar (seren_sinew.orchestration) ──────────────────────
+    def _lodestar_post(self, verb: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
+        url = (self._lc.lodestar_url.rstrip("/")
+               + f"/api/v1/service/{self._lc.lodestar_service.strip()}/{verb}")
+        headers = {}
+        tok = self._lc.resolve_lodestar_token()
+        if tok:
+            headers["Authorization"] = f"Bearer {tok}"
+        with httpx.Client(timeout=timeout, transport=self._transport) as c:
+            r = c.post(url, headers=headers, json=body)
+        r.raise_for_status()
+        out = r.json() if r.content else {}
+        return out if isinstance(out, dict) else {}
+
+    def _lodestar_ensure(self) -> None:
+        """Ask Lodestar for the model and wait for its one answer. Raises
+        with Lodestar's reason when it is not ready; on ready, model.url is
+        set from the address in the answer."""
+        from seren_sinew.orchestration import EnsureRequest, EnsureResult
+        wait = float(self._lc.ready_timeout_seconds)
+        req = EnsureRequest(holder=self._lc.lodestar_holder or "seren-hippocampus", reason="the hippocampus needs its model",
+                            wait_seconds=wait, node=self._lc.lodestar_node.strip())
+        res = EnsureResult.from_dict(self._lodestar_post("ensure", req.to_dict(), timeout=wait + 90.0))
+        if not (res.ok and res.ready):
+            raise RuntimeError(res.error or "Lodestar did not say the model is ready")
+        if res.base_url:
+            url = res.base_url.rstrip("/") + "/v1"
+            if url != self._model.url:
+                self._log(f"the model is on {res.node or 'a node'} at {url}")
+                self._model.url = url
+        self.started_by_us = True                 # the lease is ours whether or not this call started it
+        self._emit("model_leased", node=res.node, url=self._model.url, started=res.started,
+                   waited_seconds=res.waited_seconds, holders=res.holders)
+
+    def _lodestar_release(self) -> None:
+        from seren_sinew.orchestration import ReleaseRequest, ReleaseResult
+        req = ReleaseRequest(holder=self._lc.lodestar_holder or "seren-hippocampus", reason="the hippocampus is done",
+                             node=self._lc.lodestar_node.strip())
+        res = ReleaseResult.from_dict(self._lodestar_post("release", req.to_dict(), timeout=90.0))
+        if not res.ok:
+            raise RuntimeError(res.error or "Lodestar refused the release")
+        self._log("lease released" + (" and the model stopped" if res.stopped
+                                      else f"; still held by {', '.join(res.holders)}" if res.holders else ""))
+
     def release(self) -> None:
         with self._lock:
             self.last_used = time.time()
@@ -256,6 +328,8 @@ class ModelLifecycle:
                 except subprocess.TimeoutExpired:
                     self._proc.kill()
                     self._proc.wait(timeout=10)
+            elif self.via_lodestar:
+                self._lodestar_release()
             elif self._lc.observatory_url.strip() and self._lc.observatory_service.strip():
                 self._observatory("stop")
         except Exception as e:  # noqa: BLE001 - a stop that fails is logged, never raised
@@ -272,7 +346,8 @@ class ModelLifecycle:
                 self.state = "down"
 
     def snapshot(self) -> dict[str, Any]:
-        return {"managed": self.managed, "state": self.state, "started_by_us": self.started_by_us,
+        return {"managed": self.managed, "via": ("lodestar" if self.via_lodestar else "local"),
+                "state": self.state, "started_by_us": self.started_by_us,
                 "health_url": self.health_url, "last_used": self.last_used or None,
                 "keep_warm_seconds": self._lc.keep_warm_seconds, "last_error": self.last_error or None}
 

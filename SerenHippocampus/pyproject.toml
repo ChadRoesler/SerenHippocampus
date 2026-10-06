@@ -21,7 +21,7 @@ dependencies = [
     "pyyaml>=6.0",
     "httpx>=0.26",
     "seren-meninges>=2.4.0,<3",
-    "seren-sinew>=1.10.0,<2",  # 1.10.0: seren_sinew.stores with the rehearsal and restore_at_startup
+    "seren-sinew>=1.11.0,<2",  # 1.11.0: seren_sinew.orchestration (ensure / release through Lodestar)
 ]
 
 [project.optional-dependencies]
