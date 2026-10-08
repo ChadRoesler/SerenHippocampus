@@ -25,7 +25,7 @@ jobs:
         extras: ["dev", "dev,mcp", "dev,corp", "dev,corp,mcp"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0  # setuptools-scm needs full history + tags
 
@@ -58,7 +58,7 @@ jobs:
           - { label: "[corp]", spec: ".[corp]" }
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -108,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0  # setuptools-scm derives the version from the tag graph
 
