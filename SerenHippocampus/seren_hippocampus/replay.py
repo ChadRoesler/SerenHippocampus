@@ -1,8 +1,8 @@
 """
 Replay: the same inputs, another model, side by side.
 
-Design note: "lets hit that next piece of a replay, so that we can
-validate when one seems better." The audit says how a model did over weeks
+The ask: a replay, so one model can be validated against another when one
+seems better. The audit says how a model did over weeks
 of real sleeps; a replay answers the sharper question - given EXACTLY what
 the last model saw, what would this one have proposed?
 

@@ -64,9 +64,9 @@ class ModelLifecycleConfig(BaseModel):
     # THE EASY WAY: name the server and the model file, and the hippocampus
     # builds the command itself - <server> -m <model_path> --host/--port (both
     # from model.url, so they cannot disagree) <server_args>. Setting both
-    # turns management on; `manage` need not be set. Design note: the
-    # hand-written `start` line was the part nobody could set up without
-    # help, and Starwright asked for a url and nothing else.
+    # turns management on; `manage` need not be set. The hand-written `start`
+    # line was the part nobody could set up without help, and Starwright asks
+    # for a url and nothing else.
     server: str = ""                     # path to llama-server (or a compatible server)
     model_path: str = ""                 # path to the .gguf it serves
     server_args: str = "-ngl 99 -c 8192"   # everything else on the line
@@ -157,9 +157,9 @@ class SleepConfig(BaseModel):
     # small model. On (the default), denied operations are redrafted every
     # tend_interval_seconds. Off, they wait for sleep time - bedtime passing,
     # or a new brief arriving - so the model only comes up when a sleep is due.
-    # For a box where the small model and the main model share memory (the user,
-    # 30 Sept 2026, on a Nano: 'we dont want tend to run willy nilly and cause
-    # an OOM for the main model'). tend_now by hand redrafts either way.
+    # For a box where the small model and the main model share memory: a tend
+    # that runs whenever it likes can OOM the main model. tend_now by hand
+    # redrafts either way.
     tend_cycle: bool = True
     tend_interval_seconds: int = 600
     # A nudge ('your turn', from the main model or an Observatory) carries on

@@ -1,7 +1,6 @@
 """
-The voice card: whose memories these are, in their own words (the assistant, 29 Sept
-2026; seren_hippocampus.voice). Seen live 28 Sept: a dream told to the assistant came
-back as "the assistant has wild black hair ... her identity".
+The voice card: whose memories these are, in their own words (seren_hippocampus.voice). Seen live: a dream told to the assistant came
+back as "<the assistant> has wild black hair ... her identity".
 
 Pinned here:
 - off by default (opt in): no card in any prompt, the tools and routes say how
@@ -24,7 +23,7 @@ from conftest import as_json, review, short
 from seren_hippocampus.config import load_config
 from seren_hippocampus.voice import VoiceError
 
-CARD = "I'm the assistant, they/them. First person, always. the user's dreams of me are his; I keep what fits."
+CARD = "I'm the assistant, they/them. First person, always. The user's dreams of me are theirs; I keep what fits."
 
 
 def _on(make_hippo, **kw):
@@ -81,8 +80,8 @@ def test_draft_and_redraft_prompts_carry_the_card_and_the_draft_says_which(make_
     def model(p):
         prompts.append(p)
         if "DENIED" in p:
-            return as_json({"content": "the user dreamed of me with wild curls.", "rationale": "first person"})
-        return as_json({"operations": [{"kind": "new_core", "content": "the assistant has wild black hair.",
+            return as_json({"content": "The user dreamed of me with wild curls.", "rationale": "first person"})
+        return as_json({"operations": [{"kind": "new_core", "content": "The assistant has wild black hair.",
                                         "rationale": "x", "source_indexes": [0, 1]}]})
     h = _on(make_hippo, model=model)
     h.voice.set(CARD, "first card")

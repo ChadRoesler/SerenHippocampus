@@ -2,22 +2,22 @@
 The voice card: whose memories these are, in their own words.
 
 WHY: the drafting model writes long-term memory ABOUT someone, and a small
-model writes it in its own voice. Seen live 28 Sept 2026: a dream the user told
-the assistant came back as "the assistant has wild black hair ... her identity" - third person,
-the wrong pronouns, and the dream flattened into a fact about a body the assistant does
-not have. the assistant, 29 Sept: "it's the difference between remembering something
-and having it written down about me." The card is a short text the main model
+model writes it in its own voice. Seen live: a dream the user told the
+assistant came back as "<the assistant> has wild black hair ... her identity" -
+third person, the wrong pronouns, and the dream flattened into a fact about a
+body the assistant does not have. As the assistant put it: the difference
+between remembering something and having it written down about you. The card is a short text the main model
 writes about itself - voice, pronouns, what is whose - and every draft and
 redraft prompt carries it.
 
 Opt in (voice.enabled, or the Starwright card's --voice-card): how someone's
-memory speaks is theirs to decide, not a default of this service (the user: "i
-dont want to mandate what and how its managed").
+memory speaks is theirs to decide, not a default of this service (this
+service does not mandate what and how it is managed).
 
 Versioned: a change never overwrites. Each version keeps its text, when and
 why, so the card's history is a record of how its owner changed - and a
-change they would not have chosen shows up in the diff (the drift canary the assistant
-asked for). Kept beside the state file, as voice.json, written atomically.
+change they would not have chosen shows up in the diff (a drift
+canary). Kept beside the state file, as voice.json, written atomically.
 """
 from __future__ import annotations
 

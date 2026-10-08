@@ -154,7 +154,7 @@ def test_an_answer_with_no_usable_op_is_said_not_swallowed(memory, make_hippo):
 
 def test_a_verbatim_the_reviewer_marked_is_not_the_workers_to_reword(memory, make_hippo):
     """Word for word is the reviewer's call (preserve_memory_verbatim): 'I
-    want this word for word, like a promise' (Design note:). Denied, it
+    want this word for word, like a promise'. Denied, it
     is not rewritten by the worker; it leaves the chain and stays marked."""
     calls: list[str] = []
     said: list[str] = []

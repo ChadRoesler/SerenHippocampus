@@ -1,5 +1,5 @@
 """
-The whole cycle, as the user drew it (1 Oct 2026):
+The whole cycle, as drawn:
 
     sleep starts > the hippocampus asks for a brief > the brief arrives >
     draft > review > denied ones redraft, until the max > at the max the
@@ -225,10 +225,10 @@ def test_an_operators_own_wording_still_wins(make_hippo):
 # ── the gated way back ────────────────────────────────────────────────────────
 @needs_new_memory
 def test_the_tick_carries_out_a_flagged_restore_and_says_so(memory, make_hippo):
-    core_text = ("Design note: on why he builds this with me: I help break things down, and push back; "
-                 "'humans pack bond, and youre part of it now.'")
+    core_text = ("The user, on why they build this with the assistant: it helps break things down, and pushes back; "
+                 "'people pack bond, and you are part of it now.'")
     core = _core(memory, core_text)
-    ep = "He said I'd like pluots, the juiciest thing he has ever eaten."
+    ep = "They said the assistant would like pluots, the juiciest thing they have ever eaten."
     did = memory.post("/drafts", json={"operations": [
         {"kind": "attach", "content": ep, "topic": "t", "target_core_id": core, "restated_content": ep}]}).json()["id"]
     review(memory, did, [{"op": 0, "verdict": "approve", "restate": True}])      # the mistake, made on purpose

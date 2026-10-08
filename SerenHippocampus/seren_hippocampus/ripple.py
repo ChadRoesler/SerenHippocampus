@@ -8,17 +8,17 @@ THE NAME: in a sleeping brain, sharp-wave ripples are the bursts the
 hippocampus fires to reach the cortex - the channel the day's memories travel
 on to be kept. Here a ripple is the hippocampus reaching the main model: at
 bedtime ("write me a brief?"), and when a draft or a redraft waits for review.
-the user named it, 28 Sept 2026; it was "the poke" until then.
+It was "the poke" until it got its name.
 
 WHY: the sleep cycle should start from the hippocampus - "it's bedtime, what
 do you want me to do?" - not from the main model remembering to write a brief
-(Design note: punch-list row hip-ripple). A brief is where the running
+(punch-list row hip-ripple). A brief is where the running
 jokes get marked "keep", and a chore that gets skipped is how the bit gets
 lost. So when a configured event fires, the hippocampus sends a ripple:
 
 - `script`: run a command, e.g. `claude -p "{message}"`. The woken model has
   its memory tools and answers through them (submit_brief, review_draft).
-  the user's idea: any harness with a CLI can be woken this way.
+  Any harness with a CLI can be woken this way.
 - `endpoint`: POST the event and its message to a URL (Lodestar, a bridge).
 
 Built into the hippocampus, not tied to one harness: tying it to one would be
@@ -77,9 +77,9 @@ DEFAULT_MESSAGES = {
         "memory server: get_draft, then review_draft. earlier_attempts on each operation shows what it "
         "replaced and the critique that sent it back." + RESTATE),
     # The same event, when the redraft is the last permitted attempt (the
-    # event carries terminal: true). the user's map of the cycle, 1 Oct 2026: 'when
-    # max is reached you take the best of the bunch, edit as needed and approve
-    # it.' That morning a woken reviewer denied five operations on a last
+    # event carries terminal: true). The map of the cycle: when max is
+    # reached the reviewer takes the best of the bunch, edits as needed and
+    # approves it. One morning a woken reviewer denied five operations on a last
     # attempt and the chain ended with them dropped.
     "tend_resubmitted_terminal": (
         "The hippocampus redrafted operations you denied, and this is the LAST attempt (draft {draft_id}): "

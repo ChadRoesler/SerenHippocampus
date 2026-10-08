@@ -119,7 +119,7 @@ ripple:
   events: [brief_requested, draft_submitted, tend_resubmitted]
   timeout_seconds: 900
   # messages:                     # override the wording per event
-  #   brief_requested: "It's bedtime, the assistant - want to write a brief?"
+  #   brief_requested: "It's bedtime - want to write a brief?"
 
 voice:
   # The voice card: a short text the main model writes about itself - its

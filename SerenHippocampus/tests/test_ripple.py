@@ -1,6 +1,6 @@
 """
 The ripple: at bedtime the hippocampus asks the model, it doesn't wait to be
-remembered (Design note:; punch-list row hip-ripple).
+remembered (punch-list row hip-ripple).
 
 - off by default: an event is recorded and nobody is rippled
 - script: the command runs with {message} / {draft_id} filled per argument and
@@ -196,9 +196,9 @@ def test_the_ripple_block_is_read_from_the_yaml(tmp_path):
     p.write_text(
         "ripple:\n"
         "  type: script\n"
-        '  command: ["claude", "-p", "{message}", "--allowedTools", "mcp__wren-memory"]\n'
+        '  command: ["claude", "-p", "{message}", "--allowedTools", "mcp__seren-memory"]\n'
         '  cwd: "D:/work/project"\n'
         "  run_as: 'alice'\n", encoding="utf-8")
     r = load_config(str(p)).ripple
     assert r.type == "script" and r.run_as == "alice" and r.cwd == "D:/work/project"
-    assert r.command[-1] == "mcp__wren-memory"
+    assert r.command[-1] == "mcp__seren-memory"

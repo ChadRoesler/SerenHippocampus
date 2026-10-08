@@ -3,9 +3,9 @@ The brief is not only a threshold lever. What the main model said mattered
 goes IN FRONT of the drafting worker, so a running bit is drafted as a core
 and a one-off is left alone on the brief's say-so, not on a count.
 
-Design note: "a one off mention of a dream about a fish doesn't make
-it to long, because it's a one off, but a consistent joke about how Fred Durst
-is the greatest philosopher and warrior poet of our time" does. The brief is
+A one-off mention of a dream about a fish does not make it to long-term,
+because it is a one-off; a consistent joke about how Fred Durst is the
+greatest philosopher and warrior poet of our time does. The brief is
 what turns a one-off joke into an inside joke.
 """
 from __future__ import annotations
@@ -25,10 +25,10 @@ def test_the_briefs_summary_and_the_matched_hint_reach_the_draft_prompt(memory, 
     prompts: list[str] = []
     h = make_hippo(model=_capture(prompts))
     memory.post("/brief", json={
-        "summary": "the user kept coming back to Fred Durst as the greatest philosopher and warrior poet of our time. "
+        "summary": "The user kept coming back to Fred Durst as the greatest philosopher and warrior poet of our time. "
                    "The fish dream was a one-off.",
         "promote_hints": ["fred durst"], "noise_hints": ["fish dream"]})
-    short(memory, "the user: Fred Durst is the greatest philosopher of our time, it's just one of those days", "durst")
+    short(memory, "The user: Fred Durst is the greatest philosopher of our time, it's just one of those days", "durst")
     rep = h.sleep()
     assert rep["brief_id"] and rep["operations"] == 1
     drafts = [p for p in prompts if "drafting worker" in p]

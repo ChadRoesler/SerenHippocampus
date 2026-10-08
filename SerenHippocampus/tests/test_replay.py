@@ -1,8 +1,8 @@
 """
 Replay: the same inputs, another model, side by side.
 
-Design note: "a replay, so that we can validate when one seems
-better." Pinned here: every draft and redraft saves its model calls; a replay
+The ask: a replay, so one model can be validated against another when one
+seems better. Pinned here: every draft and redraft saves its model calls; a replay
 sends those prompts to a candidate (a REAL server process on a free port),
 parses and validates its answers the way a sleep does, and returns both sides
 with the verdicts, what landed and plain checks - and never submits anything

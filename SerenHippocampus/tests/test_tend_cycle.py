@@ -1,7 +1,7 @@
 """
 The tend cycle: redrafts on their own setting, apart from the heartbeat
-(Design note: on a Nano 'we dont want tend to run willy nilly and cause
-an OOM for the main model, specially if tend is pulling up the model').
+(on a small box a tend that runs whenever it likes can OOM the main model,
+especially when the tend pulls the drafting model up).
 
 One timer used to drive everything, and its tend redrafted - which starts the
 small model - whenever it happened to land. Pinned here:

@@ -35,13 +35,13 @@ needs_target_op_memory = pytest.mark.skipif(
     not _memory_takes_target_op(),
     reason="the installed seren-memory predates target_op (hip-draft-deps); runs once Memory ships it")
 
-CORE = {"kind": "new_core", "content": "the user's dream of me.", "rationale": "a dream", "source_indexes": [0]}
+CORE = {"kind": "new_core", "content": "A dream the user described.", "rationale": "a dream", "source_indexes": [0]}
 SAT = {"kind": "attach", "content": "The face, from the second dream.", "rationale": "detail",
        "target_op": 1, "source_indexes": [1]}
 
 
 def _two_shorts(memory, topic="dream"):
-    short(memory, "the user's dream of me: short, wild curls.", topic)
+    short(memory, "A dream the user described: short, wild curls.", topic)
     short(memory, "Second dream: a nose wrinkle on a real laugh.", topic)
 
 
@@ -124,7 +124,7 @@ def test_a_denied_dependent_redrafts_onto_its_approved_core(memory, make_hippo):
     def model(p):
         if "was DENIED" in p:
             prompts.append(p)
-            return as_json({"content": "the user's second dream: the nose wrinkle.", "rationale": "reframed"})
+            return as_json({"content": "The user's second dream: the nose wrinkle.", "rationale": "reframed"})
         return as_json({"operations": [CORE, dict(SAT, target_op=0)]})
     h = make_hippo(model=model)
     _two_shorts(memory)

@@ -11,8 +11,8 @@ OBEYED their critiques and were dropped by this service:
 - seven had "no usable operation": the memory was written out in the
   rationale and "content" was left out
 
-Design note: 'when a draft is denied, delve into the reason why...
-your critiques should be heavily weighted as truthy.' Pinned here:
+The same morning's ask: when a draft is denied, delve into the reason why;
+the critique is weighted as true. Pinned here:
 
 - the prompt says the critique is true and gives it first and last
 - a core the critique names by its full id is shown, and is a valid target
@@ -68,8 +68,8 @@ def test_the_prompt_says_the_critique_is_true_and_gives_it_first_and_last(memory
 
 
 def test_a_core_the_critique_names_is_shown_and_is_a_valid_target(memory, make_hippo):
-    wrong = _core(memory, "the user's terms for me.")
-    right = _core(memory, "the user did 3D character rigging.")
+    wrong = _core(memory, "The user's terms for the assistant.")
+    right = _core(memory, "The user did 3D character rigging.")
     prompts: list[str] = []
 
     def model(p):
@@ -77,12 +77,12 @@ def test_a_core_the_critique_names_is_shown_and_is_a_valid_target(memory, make_h
         return as_json({"kind": "attach", "target_core_id": right, "content": "Mostly self-taught 3D art.",
                         "rationale": "moved"})
     h = make_hippo(model=model)
-    h._candidates = lambda entries: [{"id": wrong, "content": "the user's terms for me.", "topic": "t"}]   # type: ignore
+    h._candidates = lambda entries: [{"id": wrong, "content": "The user's terms for the assistant.", "topic": "t"}]   # type: ignore
     _draft(memory, h, [{"kind": "attach", "content": "x", "target_core_id": wrong}],
            [{"op": 0, "verdict": "deny", "critique": f"Wrong target. Attach to core {right} (the rigging core)."}])
     t = h.tend()
     assert t["model_failures"] == [], "naming the core the reviewer named is not inventing one"
-    assert f"({right})" in prompts[-1] and "the user did 3D character rigging." in prompts[-1]
+    assert f"({right})" in prompts[-1] and "The user did 3D character rigging." in prompts[-1]
     op = _redraft_ops(memory, t)[0]
     assert (op["kind"], op["target_core_id"], op["content"]) == ("attach", right, "Mostly self-taught 3D art.")
 

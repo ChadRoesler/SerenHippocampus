@@ -59,7 +59,7 @@ def test_mechanical_sleep_proposes_cores_verbatim_and_respects_the_threshold(mem
 def test_mechanical_sleep_never_proposes_attach_or_supersede(memory, make_hippo):
     h = make_hippo()
     core = review(memory, memory.post("/drafts", json={"operations": [
-        {"kind": "new_core", "content": "the user likes blue.", "topic": "color"}]}).json()["id"],
+        {"kind": "new_core", "content": "The user likes blue.", "topic": "color"}]}).json()["id"],
         [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
     short(memory, "alice likes blue a lot", "color")
     short(memory, "blue again, alice said", "color")
@@ -79,11 +79,11 @@ def _model_that_attaches(prompt: str) -> str:
     import re
     ids = re.findall(r"\(([0-9a-f]{32})\)", block)
     if not ids:
-        return as_json({"operations": [{"kind": "new_core", "content": "the user likes blue.",
+        return as_json({"operations": [{"kind": "new_core", "content": "The user likes blue.",
                                         "rationale": "nothing existing", "source_indexes": [0]}]})
     return as_json({"operations": [
         {"kind": "attach", "target_core_id": ids[0], "content": "Chose blue again tonight.",
-         "restated_content": "the user likes blue; he picks it every time.",
+         "restated_content": "The user likes blue; they pick it every time.",
          "rationale": "more of the same", "source_indexes": [0, 1]},
         {"kind": "attach", "target_core_id": "deadbeef" * 4, "content": "bogus",
          "rationale": "invented id", "source_indexes": [0]},
@@ -93,7 +93,7 @@ def _model_that_attaches(prompt: str) -> str:
 def test_model_sleep_shows_the_nearest_cores_and_lands_a_real_attach(memory, make_hippo):
     h = make_hippo(model=_model_that_attaches)
     core = review(memory, memory.post("/drafts", json={"operations": [
-        {"kind": "new_core", "content": "the user likes blue.", "topic": "color", "evidence_count": 2}]}).json()["id"],
+        {"kind": "new_core", "content": "The user likes blue.", "topic": "color", "evidence_count": 2}]}).json()["id"],
         [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
     a = short(memory, "alice likes blue, picked the blue theme", "color")
     b = short(memory, "blue again for alice", "color")
@@ -104,12 +104,12 @@ def test_model_sleep_shows_the_nearest_cores_and_lands_a_real_attach(memory, mak
     assert len(d["operations"]) == 1, "the invented id was dropped, the real one kept"
     op = d["operations"][0]
     assert op["kind"] == "attach" and op["target_core_id"] == core
-    assert set(op["source_short_ids"]) == {a, b} and op["restated_content"].startswith("the user likes blue;")
+    assert set(op["source_short_ids"]) == {a, b} and op["restated_content"].startswith("The user likes blue;")
 
     out = review(memory, d["id"], [{"op": 0, "verdict": "approve"}])
     assert out["results"][0]["evidence_count"] == 4 and out["results"][0]["restated"]
     around = memory.get(f"/long/{core}/satellites").json()
-    assert around["count"] == 1 and around["core"]["content"].startswith("the user likes blue;")
+    assert around["count"] == 1 and around["core"]["content"].startswith("The user likes blue;")
 
 
 def test_model_sleep_can_supersede(memory, make_hippo):
@@ -117,11 +117,11 @@ def test_model_sleep_can_supersede(memory, make_hippo):
         import re
         ids = re.findall(r"\(([0-9a-f]{32})\)", prompt.split("Existing cores:")[1]) if "Existing cores:" in prompt else []
         return as_json({"operations": [{"kind": "supersede", "target_core_id": ids[0],
-                                        "content": "the user likes yellow now.",
+                                        "content": "The user likes yellow now.",
                                         "rationale": "he said so twice", "source_indexes": [0, 1]}]})
     h = make_hippo(model=model)
     old = review(memory, memory.post("/drafts", json={"operations": [
-        {"kind": "new_core", "content": "the user likes blue.", "topic": "color"}]}).json()["id"],
+        {"kind": "new_core", "content": "The user likes blue.", "topic": "color"}]}).json()["id"],
         [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
     short(memory, "alice likes yellow now, not blue", "color")
     short(memory, "yellow is the colour, alice says", "color")
@@ -139,7 +139,7 @@ def test_a_brief_hint_lowers_the_threshold_and_a_fresh_brief_is_not_pulled(memor
 
     def model(prompt: str) -> str:
         calls.append(prompt[:40])
-        return as_json({"operations": [{"kind": "new_core", "content": "the user hates the NUC on focal.",
+        return as_json({"operations": [{"kind": "new_core", "content": "The user hates the NUC on focal.",
                                         "rationale": "hint", "source_indexes": [0]}]})
     h = make_hippo(model=model)
     memory.post("/brief", json={"summary": "nuc", "promote_hints": ["focal"], "noise_hints": []})
@@ -156,7 +156,7 @@ def test_tend_redrafts_denied_operations_until_the_chain_is_terminal(memory, mak
     def model(prompt: str) -> str:
         if "DENIED" in prompt:
             n = prompt.count("improved x") + 1
-            return as_json({"content": f"improved x{n}: the user prefers tabs in makefiles.", "rationale": "took the critique"})
+            return as_json({"content": f"improved x{n}: The user prefers tabs in makefiles.", "rationale": "took the critique"})
         return as_json({"operations": [{"kind": "new_core", "content": "tabs, probably",
                                         "rationale": "first go", "source_indexes": [0, 1]}]})
     h = make_hippo(model=model, max_attempts=3)
@@ -187,10 +187,10 @@ def test_tend_redrafts_denied_operations_until_the_chain_is_terminal(memory, mak
 
     # the editor's release valve exists only now
     r = memory.post(f"/drafts/{d3['id']}/review", json={"decisions": [
-        {"op": 0, "verdict": "approve", "edited_content": "the user prefers tabs in makefiles."}]})
+        {"op": 0, "verdict": "approve", "edited_content": "The user prefers tabs in makefiles."}]})
     assert r.status_code == 200, r.text
     entry = cores(memory)[r.json()["results"][0]["long_term_id"]]
-    assert entry["content"] == "the user prefers tabs in makefiles."
+    assert entry["content"] == "The user prefers tabs in makefiles."
 
 
 def test_a_denied_terminal_draft_ends_the_chain(memory, make_hippo):
@@ -321,8 +321,7 @@ def test_queue_reports_an_unreachable_memory_instead_of_failing(hcfg):
 def test_quiet_tends_never_push_a_sleep_out_of_the_history(memory, make_hippo):
     """The loop tends every few minutes. Listed, a day of them filled the
     history's 40 rows in about three hours and last night's sleep fell off
-    the end (Design note: 'the tends are all shown which makes it a
-    chore to hit events')."""
+    the end: with every tend shown, reaching the events was a chore."""
     h = make_hippo()
     short(memory, "a", "t"); short(memory, "b", "t")
     did = h.sleep()["draft_id"]

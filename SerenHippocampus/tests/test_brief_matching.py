@@ -21,7 +21,7 @@ from seren_hippocampus.config import RippleConfig
 from seren_hippocampus.sleep import CLUSTER_MAX, _tags, _words, cluster_by_tags, hint_match
 
 SEREN = ("The tell that she was drifting: she stopped being in on the bit. Inside jokes turned into "
-         "explanations of why they were funny. a persona's story, told by the user.")
+         "explanations of why they were funny. The story of a persona that drifted.")
 
 
 def _m(haystack: str, hint: str, tags=frozenset(), loose=True):
@@ -60,7 +60,7 @@ def test_a_pile_does_not_chain_and_is_capped():
     assert [len(m) for _, m in many] == [CLUSTER_MAX, 3]
     untagged = cluster_by_tags([{"id": "u", "content": "x", "metadata": {}}])
     assert untagged == [("_untagged", untagged[0][1])]
-    assert _tags(" the assistant , alice,, ") == frozenset({"wren", "alice"})
+    assert _tags(" Alice , bob,, ") == frozenset({"alice", "bob"})
 
 
 def _brief(memory, promote, noise=()):
@@ -80,8 +80,8 @@ def test_a_sentence_hint_keeps_a_lone_memory(make_hippo, memory):
 
 
 def test_three_copies_of_one_dream_are_evidence(make_hippo, memory):
-    for i, topic in enumerate(("wren,alice,identity", "wren,alice,identity,dream", "wren,alice,dream,identity")):
-        short(memory, f"the user's dream of me, copy {i}: wild curls", topic)
+    for i, topic in enumerate(("alice,bob,identity", "alice,bob,identity,dream", "alice,bob,dream,identity")):
+        short(memory, f"A dream the user described, copy {i}: wild curls", topic)
     rep = make_hippo().sleep()
     assert rep["clusters"] == 1 and rep["operations"] == 1, "one pile of three, not three piles of one"
 

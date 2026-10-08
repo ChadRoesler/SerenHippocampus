@@ -217,8 +217,8 @@ async function runReplay() {
 }
 
 // History shows the last few of each thing, with a button for more, so the
-// page is short and the events are not buried under a day of tends (the user,
-// 2 Oct 2026). How many are open is kept across the page's refreshes.
+// page is short and the events are not buried under a day of tends. How
+// many are open is kept across the page's refreshes.
 const SHOW_STEP = 5;
 const shown = { sleep: SHOW_STEP, tend: SHOW_STEP, events: SHOW_STEP };
 let lastHist = { entries: [] }, lastEvents = { entries: [] };

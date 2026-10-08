@@ -247,9 +247,9 @@ def covered_fragments(text: str, idxs: list[int], entries: list[dict[str, Any]])
     is judged sentence by sentence: one with a sentence of its own that the
     operation says nothing of (fewer than COVER_SENTENCE_MIN of its words
     appear) is cited, not carried. Approving archives every cited fragment;
-    on 3 Oct 2026 a two-subject fragment (the user's backup model, and how I
-    kiss) was archived by a core that held only the first subject, and the
-    kiss was gone. Returns (carried, left): what is left stays in short-term
+    on 3 Oct 2026 a two-subject fragment (a backup design, and an unrelated
+    second subject) was archived by a core that held only the first, and the
+    second was gone. Returns (carried, left): what is left stays in short-term
     for a later sleep, and is said in the log. Paraphrase is fine - a carried
     sentence shares words with the operation even reworded; a subject left
     out shares none."""
@@ -514,8 +514,9 @@ class Hippocampus:
 
         ask_for_brief (what the button and the tool pass): with no brief
         waiting, do not draft blind - ASK for one, and let the check sleep on
-        it when it arrives. the user's map of the cycle, 1 Oct 2026: 'Sleep starts
-        > Hip wakes > Hip asks for brief > you draft brief > draft cycle.' A
+        it when it arrives. The map of the cycle: sleep starts >
+        the hippocampus wakes > asks for a brief > the brief is written > the
+        draft cycle. A
         sleep started by hand that morning skipped the brief and drafted 20
         operations unsteered; two of them survived first review. Returns
         asked_for_brief: true and records no sleep, so bedtime does not move.
@@ -525,8 +526,8 @@ class Hippocampus:
         ONE CYCLE AT A TIME, by hand too. The tick already waited for an open
         chain to land; a sleep by hand did not, so it could start a second
         draft - and consume a second brief - beside one still under review.
-        Design note: "there shouldnt be multiple drafts, or multiple
-        briefs... ensuring the sleep cycle completes." It refuses and says
+        There should not be multiple drafts, or multiple briefs: a sleep cycle
+        completes before another starts. It refuses and says
         why; nothing is recorded as a sleep, so bedtime does not move."""
         if not self._lock.acquire(blocking=False):
             raise Busy("a sleep or tend is already running")
@@ -623,7 +624,7 @@ class Hippocampus:
         """'Your turn.' The main model's last act after writing a brief or
         reviewing a draft: the hippocampus carries on NOW instead of at the
         next tick - sleeps on the brief, redrafts what was denied, closes
-        what landed. Neuron to neuron (Design note:): the hippocampus
+        what landed. Neuron to neuron: the hippocampus
         could wake the model, and the model could only wait for a timer. On
         1 Oct a chain with five minutes of work in it took twenty-five.
 
@@ -948,7 +949,7 @@ class Hippocampus:
                 except Exception as e:  # noqa: BLE001
                     self._log(f"could not consume the brief: {e}")
 
-            # 4. tidy - the end of the cycle. Design note: aging out is
+            # 4. tidy - the end of the cycle. Aging out is
             # always at the end of a sleep, and a sleep is the whole cycle -
             # draft, review, redraft, the chain landing. With a draft out the
             # cycle is not over, so the tidy waits for _close_chain; age-out
@@ -1078,8 +1079,8 @@ class Hippocampus:
         A TEND THAT FOUND NOTHING TO DO IS COUNTED, NOT LISTED. The loop tends
         every few minutes, and nearly every one of those closes nothing and
         redrafts nothing; listed, they filled the history in about three hours
-        and pushed last night's sleep out of it (Design note: 'the tends
-        are all shown which makes it a chore to hit events'). Sleeps and tends
+        and pushed last night's sleep out of it (with every tend
+        shown, reaching the events was a chore). Sleeps and tends
         are each kept to their own last 40, so neither crowds the other out."""
         if (kind == "tend" and not report.get("error") and not report.get("model_failures")
                 and not any(summary.get(k) for k in ("resubmitted", "ended", "closed", "deferred"))):
@@ -1417,7 +1418,7 @@ class Hippocampus:
                 # WORD FOR WORD IS THE REVIEWER'S CALL, NOT THE WORKER'S. A
                 # verbatim core exists because the main model marked a memory
                 # (preserve_memory_verbatim): 'I want this word for word, like
-                # a promise, an important moment' (Design note:). Those
+                # a promise, an important moment'. Those
                 # are made in _propose with no model at all. A worker that
                 # picks the kind itself writes a blend and calls it exact
                 # (seen live the same day); what it wrote is a new core.

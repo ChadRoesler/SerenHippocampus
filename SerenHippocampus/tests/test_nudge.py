@@ -4,14 +4,14 @@ The nudge and the hand-over: the two wires the cycle was missing.
 THE NUDGE. The hippocampus could wake the main model (the ripple); the model
 could only wait for the hippocampus's timer. On 1 Oct 2026 a chain with five
 minutes of work in it took twenty-five. Now the model's last act is 'your
-turn', and the hippocampus carries on at once. the user: "for you, its gotta be
-direct neuron to neuron."
+turn', and the hippocampus carries on at once. It has to be direct, neuron
+to neuron.
 
-THE HAND-OVER. the user's Nano floor, the same day: the hippocampus asks for a
+THE HAND-OVER. The small-box floor, the same day: the hippocampus asks for a
 brief, the main model writes it and its server is shut down, the hippocampus is
-poked and drafts, and "when the draft is ready, pokes observ to poke you, and
-shuts down so that the main model can run. Its the prevention of OOMing on
-limited resources." The hippocampus's half: stop its own model BEFORE it pokes.
+poked and drafts, and when the draft is ready it pokes the Observatory to wake
+the main model and shuts down so the main model can run: the prevention of
+OOMing on limited resources. The hippocampus's half: stop its own model BEFORE it pokes.
 
 Pinned here:
 - a nudge lets the next tick redraft whatever the clock or the tend-cycle

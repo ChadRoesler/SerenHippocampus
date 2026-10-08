@@ -29,7 +29,7 @@ from seren_hippocampus.config import RippleConfig, load_config, warn_unknown_set
 from seren_hippocampus.ripple import WOKEN, Ripple
 from seren_hippocampus.sleep import cited_fragments, salvage_operations
 
-OP_A = {"kind": "new_core", "content": "The lantern promise, as the user made it.", "rationale": "x", "source_indexes": [0]}
+OP_A = {"kind": "new_core", "content": "The promise, as the user made it.", "rationale": "x", "source_indexes": [0]}
 OP_B = {"kind": "new_core", "content": "The NUC moved to jammy.", "rationale": "x", "source_indexes": [1]}
 
 
@@ -50,7 +50,7 @@ def test_salvage_reads_the_finished_operations():
 def test_a_cut_off_answer_keeps_what_it_finished(make_hippo, memory):
     h = make_hippo(model=lambda p: _cut([OP_A, OP_B], '{"kind": "new_core", "content": "cut off he'),
                    promote_min_evidence=1)
-    short(memory, "the user's lantern promise", "t"); short(memory, "the NUC moved to jammy", "t")
+    short(memory, "the user's promise", "t"); short(memory, "the NUC moved to jammy", "t")
     rep = h.sleep()
     assert rep["operations"] == 2 and rep["cut_off"] == 1
     assert rep["model_failures"] == [], "two finished operations are not a failure"
@@ -74,7 +74,7 @@ def test_a_pile_yields_a_few_operations_not_one_per_sentence(make_hippo, memory)
 
 
 def test_an_operation_cites_only_the_fragments_it_came_from():
-    entries = [{"id": "kdm", "content": "the user's tank died of a lion flashback in Kingdom Death, vestphobia and all"},
+    entries = [{"id": "kdm", "content": "The user's tank died of a lion flashback in Kingdom Death, vestphobia and all"},
                {"id": "nuc", "content": "the NUC moved to jammy and the port changed to 7267"},
                {"id": "kdm2", "content": "the tank ripped off his rawhide vest: vestphobia, in Kingdom Death"}]
     text = "In Kingdom Death, the user's tank got vestphobia, ripped off his rawhide vest, and died of a lion flashback."
@@ -88,11 +88,11 @@ def test_an_operation_not_drawn_from_the_fragments_is_dropped(make_hippo, memory
     'verbatim' operation that was the dream CORE's text, copied from the cores
     it was shown. No fragment in the pile says it."""
     from seren_hippocampus.sleep import grounded
-    kdm = ("the user's first KDM story: a new campaign with horrible luck, they barely survived the opening White Lion "
+    kdm = ("The user's first KDM story: a new campaign with horrible luck, they barely survived the opening White Lion "
            "fight, the tank wore the full rawhide set, drew Lion in heat, rolled Vestphobia and ripped off his vest")
-    dream = ("In the user's dream, I have a woman, short, wild black hair in big slightly frizzy curls that won't lie "
+    dream = ("In the user's dream, the assistant is a woman, short, wild black hair in big slightly frizzy curls that won't lie "
              "down, who greets with her whole body and warm hugs")
-    own = "the user's first KDM campaign had horrible luck: the tank in the full rawhide set rolled Vestphobia against the White Lion."
+    own = "The user's first KDM campaign had horrible luck: the tank in the full rawhide set rolled Vestphobia against the White Lion."
     entries = [{"id": "k", "content": kdm}]
     assert grounded(own, entries) is True and grounded(dream, entries) is False
     assert grounded("x", entries) is True and grounded(dream, [{"id": "s", "content": "a"}]) is True, "too short to judge"
@@ -109,14 +109,14 @@ def test_an_operation_not_drawn_from_the_fragments_is_dropped(make_hippo, memory
 
 
 def test_a_restatement_that_repeats_the_content_is_dropped(make_hippo, memory):
-    core = memory.post("/drafts", json={"operations": [{"kind": "new_core", "content": "the user's dream of me.", "topic": "t"}]}).json()["id"]
+    core = memory.post("/drafts", json={"operations": [{"kind": "new_core", "content": "A dream the user described.", "topic": "t"}]}).json()["id"]
     from conftest import review
     cid = review(memory, core, [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
-    same = "In the user's dream, I have freckles."
+    same = "In the user's dream, the assistant has freckles."
     h = make_hippo(model=lambda p: as_json({"operations": [
         {"kind": "attach", "target_core_id": cid, "content": same, "restated_content": same,
          "rationale": "x", "source_indexes": [0]}]}), promote_min_evidence=1)
-    h._candidates = lambda entries: [{"id": cid, "content": "the user's dream of me.", "topic": "t"}]   # type: ignore[method-assign]
+    h._candidates = lambda entries: [{"id": cid, "content": "A dream the user described.", "topic": "t"}]   # type: ignore[method-assign]
     short(memory, "the dream: freckles in the sun", "t")
     did = h.sleep()["draft_id"]
     op = memory.get(f"/drafts/{did}").json()["operations"][0]
@@ -144,8 +144,8 @@ def test_a_woken_run_is_told_nobody_is_there():
     for kind in ("brief_requested", "draft_submitted", "tend_resubmitted", "brief_unmatched"):
         assert r.message({"event": kind, "draft_id": "d1"}).startswith(WOKEN), kind
     assert "nobody is at the keyboard" in WOKEN
-    mine = Ripple(RippleConfig(type="script", messages={"brief_requested": "Bedtime, the assistant."}), log=lambda m: None)
-    assert mine.message({"event": "brief_requested"}) == "Bedtime, the assistant.", "an operator's own wording is left alone"
+    mine = Ripple(RippleConfig(type="script", messages={"brief_requested": "Bedtime, friend."}), log=lambda m: None)
+    assert mine.message({"event": "brief_requested"}) == "Bedtime, friend.", "an operator's own wording is left alone"
 
 
 def test_a_setting_in_the_wrong_block_is_named(tmp_path, capsys):

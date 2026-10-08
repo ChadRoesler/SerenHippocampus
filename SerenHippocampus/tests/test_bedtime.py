@@ -199,7 +199,7 @@ def test_an_older_open_brief_retires_with_the_one_the_sleep_used(memory, make_hi
 
 
 def test_the_draft_cap_is_held_and_one_attempt_means_terminal(memory, make_hippo):
-    """Design note: the draft cap - max rounds of draft and critique, so no
+    """The draft cap - max rounds of draft and critique, so no
     endless loop - lives here. 0 would be no draft at all and 999 a chain that
     runs until the reviewer gives up, so it is held to 1-10; bedtime is held
     to at least ten minutes. max_attempts 1 means the first draft is the last:
@@ -222,7 +222,7 @@ def test_the_draft_cap_is_held_and_one_attempt_means_terminal(memory, make_hippo
 
 
 def test_a_sleep_by_hand_waits_for_the_open_chain(memory, make_hippo):
-    """Design note: one sleep cycle at a time - no second draft, no second
+    """One sleep cycle at a time - no second draft, no second
     brief consumed, while one is under review. The tick always waited; a sleep
     by hand (the button, POST /sleep, the MCP sleep_now) did not. It refuses
     now, records no sleep (bedtime does not move), and works again once the
@@ -303,7 +303,7 @@ def test_a_model_failure_in_a_redraft_leaves_the_chain_waiting(memory, make_hipp
 
 
 def test_aging_out_is_at_the_end_of_the_cycle_not_under_a_draft(memory, make_hippo):
-    """Design note: the hippocampus ages out short-terms, always at the
+    """The hippocampus ages out short-terms, always at the
     end of a sleep - and the sleep is the whole cycle. A short-term past its
     lifetime survives while a draft is out (even one whose operation was
     denied and waits for a redraft), and ages out when the chain lands."""

@@ -181,7 +181,7 @@ def test_the_observatory_starts_and_stops_a_registered_service(memory, make_hipp
 
 
 def test_in_a_cluster_the_model_comes_through_lodestar(memory, make_hippo):
-    """Design note: hippocampus => Lodestar => Observatory => start llama
+    """The chain: hippocampus => Lodestar => Observatory => start llama
     => the Observatory waits until llama is up => Lodestar tells the
     hippocampus it is ready, and where. One call; the lease is released when
     the hippocampus is done."""
@@ -350,7 +350,7 @@ def test_thinking_is_switched_off_by_default(memory, make_hippo):
 
 
 def test_every_draft_says_which_model_wrote_it(memory, make_hippo):
-    """Design note: validate swapping consolidators and catch drift. The
+    """Validate swapping consolidators and catch drift. The
     audit can only do that if each draft is stamped with the model that wrote
     it - the name the SERVER gives (the gguf), not only the config's alias -
     and the prompt version. A redraft is stamped too; so is a sleep with no
