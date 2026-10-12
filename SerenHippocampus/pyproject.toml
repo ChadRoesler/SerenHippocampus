@@ -20,8 +20,8 @@ dependencies = [
     "pydantic>=2.5",
     "pyyaml>=6.0",
     "httpx>=0.26",
-    "seren-meninges>=2.4.0,<3",
-    "seren-sinew>=1.11.0,<2",  # 1.11.0: seren_sinew.orchestration (ensure / release through Lodestar)
+    "seren-meninges>=2.4.0,<6",
+    "seren-sinew>=1.11.0,<6",  # 1.11.0: seren_sinew.orchestration (ensure / release through Lodestar)
 ]
 
 [project.optional-dependencies]
