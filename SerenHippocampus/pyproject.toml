@@ -45,6 +45,20 @@ dev = [
     "seren-memory>=4.5.0",
 ]
 
+# The Seren apps this one talks to over HTTP, and how new each must be.
+# NEVER INSTALLED: nobody asks for [peers]. The Observatory reads it before an
+# upgrade (seren_observatory.upgrades, PEERS) and holds the upgrade when an app
+# listed here is in the cluster but older; an app that is not there at all is
+# not required. Raise a floor in the same commit that starts using what the
+# newer peer added. The stores' side of the deal: within a major, only add.
+#
+# Memory 4.5.0: /drafts and target_op (see dev above). Lodestar: ensure /
+# release, for waking the model.
+peers = [
+    "seren-memory>=4.5.0",
+    "seren-lodestar>=5.0",
+]
+
 [project.scripts]
 seren-hippocampus = "seren_hippocampus.__main__:main"
 
