@@ -41,7 +41,7 @@ SAT = {"kind": "attach", "content": "The face, from the second dream.", "rationa
 
 
 def _two_shorts(memory, topic="dream"):
-    short(memory, "A dream the user described: short, wild curls.", topic)
+    short(memory, "A dream the user described: a green scarf.", topic)
     short(memory, "Second dream: a nose wrinkle on a real laugh.", topic)
 
 

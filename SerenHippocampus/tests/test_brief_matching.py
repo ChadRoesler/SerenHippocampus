@@ -4,8 +4,9 @@ hip-cluster-tags, hip-brief-unmatched - all three hit live on 28 Sept).
 
 Pinned here:
 - a hint matches by its exact text, by being one of the memories' tags, or -
-  promote hints only - by most of its words; "Seren's drift tell: losing the
-  bit" now finds the memory it was written about. Noise hints stay strict.
+  promote hints only - by most of its words; a sentence written ABOUT a memory
+  ("the garden's failing tell: losing the beds") now finds the memory, whose
+  own words are different. Noise hints stay strict.
 - memories group by shared tags, so three copies of one dream tagged three
   ways are one pile of three - which is evidence - and a pile cannot chain
   into an unrelated one
@@ -20,8 +21,11 @@ from conftest import short
 from seren_hippocampus.config import RippleConfig
 from seren_hippocampus.sleep import CLUSTER_MAX, _tags, _words, cluster_by_tags, hint_match
 
-SEREN = ("The tell that she was drifting: she stopped being in on the bit. Inside jokes turned into "
-         "explanations of why they were funny. The story of a persona that drifted.")
+# A memory, and (below) hints written about it in other words - the shape of
+# the live miss on 28 Sept: the hint was a sentence about the memory, the
+# memory said the same thing differently, and letter-for-letter found nothing.
+PASSAGE = ("The tell that the garden was failing: the beds stopped draining after rain. Puddles stood where "
+           "the paths used to dry by noon. The story of a season that drowned.")
 
 
 def _m(haystack: str, hint: str, tags=frozenset(), loose=True):
@@ -29,16 +33,16 @@ def _m(haystack: str, hint: str, tags=frozenset(), loose=True):
 
 
 def test_a_hint_matches_exactly_by_tag_or_by_its_words():
-    assert _m(SEREN, "in on the bit") == "exact"
-    assert _m(SEREN, "dream", tags={"wren", "dream"}) == "tag"
-    assert _m(SEREN, "Seren's drift tell: losing the bit") == "words", "the sentence that matched nothing on 28 Sept"
-    assert _m(SEREN, "the lantern promise and the archives") is None
-    assert _m(SEREN, "lantern") is None, "one word matches exactly or not at all"
+    assert _m(PASSAGE, "stopped draining") == "exact"
+    assert _m(PASSAGE, "dream", tags={"alice", "dream"}) == "tag"
+    assert _m(PASSAGE, "the garden's failing tell: losing the beds") == "words", "a sentence about the memory, in other words"
+    assert _m(PASSAGE, "the harvest festival and the archives") is None
+    assert _m(PASSAGE, "harvest") is None, "one word matches exactly or not at all"
 
 
 def test_noise_hints_stay_strict():
-    assert _m(SEREN, "Seren's drift tell: losing the bit", loose=False) is None
-    assert _m(SEREN, "in on the bit", loose=False) == "exact"
+    assert _m(PASSAGE, "the garden's failing tell: losing the beds", loose=False) is None
+    assert _m(PASSAGE, "stopped draining", loose=False) == "exact"
 
 
 def _s(topic, i=0):
@@ -46,11 +50,11 @@ def _s(topic, i=0):
 
 
 def test_one_story_tagged_three_ways_is_one_pile():
-    piles = cluster_by_tags([_s("wren,alice,identity"), _s("wren,alice,identity,dream"),
-                             _s("wren,alice,dream,identity"), _s("hippocampus,ripple,bug")])
+    piles = cluster_by_tags([_s("alice,bob,identity"), _s("alice,bob,identity,dream"),
+                             _s("alice,bob,dream,identity"), _s("hippocampus,ripple,bug")])
     sizes = sorted(len(m) for _, m in piles)
     assert sizes == [1, 3]
-    assert piles[0][0] == "wren,alice,identity", "a pile keeps its first memory's topic"
+    assert piles[0][0] == "alice,bob,identity", "a pile keeps its first memory's topic"
 
 
 def test_a_pile_does_not_chain_and_is_capped():
@@ -71,30 +75,30 @@ def _brief(memory, promote, noise=()):
 def test_a_sentence_hint_keeps_a_lone_memory(make_hippo, memory):
     """Mechanical mode, promote_min_evidence 2: one memory is kept only if a
     hint names it - and now a natural sentence can."""
-    short(memory, SEREN, "seren,history")
-    _brief(memory, ["Seren's drift tell: losing the bit"])
+    short(memory, PASSAGE, "garden,history")
+    _brief(memory, ["the garden's failing tell: losing the beds"])
     h = make_hippo()
     rep = h.sleep()
-    assert rep["operations"] == 1 and rep["hints"]["promote"]["seren's drift tell: losing the bit"] == ["seren,history"]
+    assert rep["operations"] == 1 and rep["hints"]["promote"]["the garden's failing tell: losing the beds"] == ["garden,history"]
     assert "brief_unmatched" not in rep
 
 
 def test_three_copies_of_one_dream_are_evidence(make_hippo, memory):
     for i, topic in enumerate(("alice,bob,identity", "alice,bob,identity,dream", "alice,bob,dream,identity")):
-        short(memory, f"A dream the user described, copy {i}: wild curls", topic)
+        short(memory, f"A dream the user described, copy {i}: a red door", topic)
     rep = make_hippo().sleep()
     assert rep["clusters"] == 1 and rep["operations"] == 1, "one pile of three, not three piles of one"
 
 
 def test_an_unmatched_brief_is_said_and_parked_not_consumed(make_hippo, memory):
-    short(memory, "the NUC moved to jammy", "nuc")
-    bid = _brief(memory, ["the lantern promise"])
+    short(memory, "node-a moved to jammy", "nodes")
+    bid = _brief(memory, ["the harvest festival"])
     h = make_hippo()
     rep = h.sleep()
-    assert rep["brief_unmatched"] is True and rep["hints"]["promote"] == {"the lantern promise": []}
+    assert rep["brief_unmatched"] is True and rep["hints"]["promote"] == {"the harvest festival": []}
     assert rep["operations"] == 0 and rep["draft_id"] is None
     ev = [e for e in h.state["events"] if e["event"] == "brief_unmatched"]
-    assert ev and ev[-1]["brief_id"] == bid and ev[-1]["hints"] == ["the lantern promise"]
+    assert ev and ev[-1]["brief_id"] == bid and ev[-1]["hints"] == ["the harvest festival"]
     assert h._mem.latest_brief()["id"] == bid, "not consumed"
     assert bid in h.state["parked_briefs"]
     chk = h.check()

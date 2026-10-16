@@ -70,8 +70,9 @@ CLUSTER_MIN_OVERLAP = 0.5
 CLUSTER_MAX = 12
 
 # A hint used to count only if its whole text appeared, letter for letter, in
-# a memory: "Seren's drift tell: losing the bit" never matched "she stopped
-# being in on the bit", and the biggest day of the week drafted nothing
+# a memory. A brief's hint is a sentence written ABOUT a memory, and the memory
+# says the same thing in its own words, so the two rarely share a run of text:
+# on the biggest day of the week every hint missed and nothing was drafted
 # (hip-hint-match, 28 Sept). Now: exact text first, then one of the memory's
 # tags, then - promote hints only - most of the hint's words. Noise hints stay
 # strict: a noise match holds a whole pile back, and a loose one there would

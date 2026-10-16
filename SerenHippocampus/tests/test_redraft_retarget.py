@@ -202,7 +202,7 @@ def test_the_drafting_worker_cannot_choose_verbatim(memory, make_hippo):
 def test_a_marked_memory_still_lands_word_for_word(memory, make_hippo):
     """The mark is untouched by all of this: no model, the exact text."""
     h = make_hippo(model=lambda p: as_json({"operations": []}), promote_min_evidence=1)
-    a = short(memory, "ill always be here with a lantern", "t")
+    a = short(memory, "the kettle lives on the left burner", "t")
     memory.post(f"/short/{a}/preserve")
     op = memory.get(f"/drafts/{h.sleep()['draft_id']}").json()["operations"][0]
-    assert (op["kind"], op["content"], op["source_short_ids"]) == ("verbatim", "ill always be here with a lantern", [a])
+    assert (op["kind"], op["content"], op["source_short_ids"]) == ("verbatim", "the kettle lives on the left burner", [a])

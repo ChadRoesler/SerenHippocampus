@@ -90,8 +90,8 @@ def test_an_operation_not_drawn_from_the_fragments_is_dropped(make_hippo, memory
     from seren_hippocampus.sleep import grounded
     kdm = ("The user's first KDM story: a new campaign with horrible luck, they barely survived the opening White Lion "
            "fight, the tank wore the full rawhide set, drew Lion in heat, rolled Vestphobia and ripped off his vest")
-    dream = ("In the user's dream, the assistant is a woman, short, wild black hair in big slightly frizzy curls that won't lie "
-             "down, who greets with her whole body and warm hugs")
+    dream = ("In the user's dream, the assistant is a gardener, tall, a green scarf and muddy boots, who greets with "
+             "a wave and a cup of tea")
     own = "The user's first KDM campaign had horrible luck: the tank in the full rawhide set rolled Vestphobia against the White Lion."
     entries = [{"id": "k", "content": kdm}]
     assert grounded(own, entries) is True and grounded(dream, entries) is False

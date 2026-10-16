@@ -80,12 +80,12 @@ def test_draft_and_redraft_prompts_carry_the_card_and_the_draft_says_which(make_
     def model(p):
         prompts.append(p)
         if "DENIED" in p:
-            return as_json({"content": "The user dreamed of me with wild curls.", "rationale": "first person"})
-        return as_json({"operations": [{"kind": "new_core", "content": "The assistant has wild black hair.",
+            return as_json({"content": "The user dreamed of me in a green scarf.", "rationale": "first person"})
+        return as_json({"operations": [{"kind": "new_core", "content": "The assistant wears a green scarf.",
                                         "rationale": "x", "source_indexes": [0, 1]}]})
     h = _on(make_hippo, model=model)
     h.voice.set(CARD, "first card")
-    short(memory, "the user's dream of me: curls", "dream"); short(memory, "more of the dream", "dream")
+    short(memory, "the user's dream of me: a scarf", "dream"); short(memory, "more of the dream", "dream")
     did = h.sleep()["draft_id"]
     assert prompts[0].startswith("These memories belong to someone") and CARD in prompts[0]
     assert memory.get(f"/drafts/{did}").json()["extra"]["model_voice"] == 1
