@@ -53,3 +53,6 @@ code.id { font-size: 11px; opacity: .6; }
 
 /* History: the 'show more' button under a short list */
 .btn.more { margin: 6px 0 14px; font-size: 12px; opacity: 0.85; }
+
+/* the header pill when Memory is not answering */
+.head-pill.bad { color: #e06c75; border-color: #e06c75; }

@@ -31,11 +31,17 @@ function clearError() { $('error-slot').innerHTML = ''; }
 
 // ----------------------------------------------------------------------------
 function renderPills(root, status) {
-    const mem = $('memoryBadge'), mod = $('modelBadge');
-    if (mem) { mem.textContent = root.memory_reachable ? 'memory: reachable' : 'memory: unreachable';
-               mem.className = 'head-pill' + (root.memory_reachable ? '' : ' hot'); }
-    if (mod) { mod.textContent = status.model_configured ? 'model: wired' : 'model: mechanical';
-               mod.className = 'head-pill'; }
+    const pill = $('statusBadge');
+    if (!pill) return;
+    if (!root.memory_reachable) {
+        pill.textContent = 'memory unreachable';
+        pill.title = 'SerenMemory is not answering; no sleep can run until it does';
+        pill.className = 'head-pill bad';
+        return;
+    }
+    pill.textContent = status.model_configured ? 'model: wired' : 'model: mechanical';
+    pill.title = status.model_configured ? 'a drafting model is configured' : 'no drafting model: the mechanical drafter';
+    pill.className = 'head-pill hot';
 }
 
 function renderOverview(root, status, queue) {
