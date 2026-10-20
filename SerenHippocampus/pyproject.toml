@@ -39,10 +39,10 @@ dev = [
     # The tests run the REAL SerenMemory app in-process behind an ASGI
     # transport, so the contract between the two is exercised, not mocked.
     # 4.0.0 is the first Memory with /drafts (the docket rename) and without
-    # the in-process consolidator: release Memory first, then this. 4.5.0 is
+    # the in-process consolidator: release Memory first, then this. 5.2 is
     # the first with target_op (hip-draft-deps); tests/test_draft_target_op.py
     # skips its Memory-side checks on anything older rather than failing.
-    "seren-memory>=4.5.0",
+    "seren-memory>=5.2.0",
 ]
 
 # The Seren apps this one talks to over HTTP, and how new each must be.
@@ -52,10 +52,10 @@ dev = [
 # not required. Raise a floor in the same commit that starts using what the
 # newer peer added. The stores' side of the deal: within a major, only add.
 #
-# Memory 4.5.0: /drafts and target_op (see dev above). Lodestar: ensure /
+# Memory 5.2.0: short handeling and target_op (see dev above). Lodestar: ensure /
 # release, for waking the model.
 peers = [
-    "seren-memory>=4.5.0",
+    "seren-memory>=5.2.0",
     "seren-lodestar>=5.0",
 ]
 
