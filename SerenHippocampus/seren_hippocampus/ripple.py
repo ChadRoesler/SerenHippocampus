@@ -88,7 +88,8 @@ DEFAULT_MESSAGES = {
         "operation, the core it would change (target_core), and earlier_attempts with your critiques. For "
         "each one take the best version there is, fix what is still wrong yourself, and approve it with "
         "review_draft: edited_content for the text, edited_kind and edited_target_core_id when it is the "
-        "wrong kind of operation or aimed at the wrong core. Deny only what should not be in memory at all "
+        "wrong kind of operation or aimed at the wrong core, edited_source_short_ids when what you approve "
+        "carries a fragment in left_in_short_term. Deny only what should not be in memory at all "
         "- a duplicate, something untrue - and say why." + RESTATE),
     "brief_unmatched": (
         "The hippocampus slept on your brief, but none of its promote_hints matched a memory, so it kept "

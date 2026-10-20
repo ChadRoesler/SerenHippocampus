@@ -1460,6 +1460,7 @@ class Hippocampus:
                 self._log(f"{topic or 'untagged'}: dropped a {kind} whose text is not in the fragments "
                           f"(copied from a core or the card?): {content[:90]!r}")
                 continue
+            left: list[int] = []
             if kind != "verbatim":
                 # what the text covers first, then which of those it came from:
                 # a two-subject fragment shares the most words of all and would
@@ -1475,6 +1476,10 @@ class Hippocampus:
                   "rationale": str(raw.get("rationale") or "")[:500] or None}
             if restated:
                 op["restated_content"] = restated
+            if left:
+                # cited, not carried: the reviewer sees them and may name them
+                # (edited_source_short_ids) if the text carries them after all
+                op["left_short_ids"] = [entries[i]["id"] for i in left]
             kept.append((pos, op, target_op))
         # new_cores that survived, by answer position; an op on one that did
         # not (or on itself, or on anything but a new_core) goes
@@ -1957,7 +1962,7 @@ class Hippocampus:
         # keeps its words.
         # A redraft used to cite every fragment the denied operation cited. It
         # carries only what its text covers (covered_fragments); the rest stays.
-        keep = list(range(len(src)))
+        keep, left = list(range(len(src))), []
         if src and kind != "verbatim":
             keep, left = covered_fragments(content, keep, src)
             if left:
@@ -1966,6 +1971,8 @@ class Hippocampus:
         new = {"kind": kind, "content": content, "topic": op.get("topic"), "target_core_id": target,
                "source_short_ids": [src[i]["id"] for i in keep], "evidence_count": max(1, len(keep)),
                "rationale": rationale}
+        if left:
+            new["left_short_ids"] = [src[i]["id"] for i in left]  # shown to the reviewer, as at draft time
         if wants is not None:
             new["_wants_op"] = wants                       # resolved by _link_redrafts
         if op.get("index") is not None:

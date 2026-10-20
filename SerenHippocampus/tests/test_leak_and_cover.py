@@ -9,7 +9,8 @@ cutting it out by hand. A memory is never the prompt echoed back.
 THE LOSS. An operation that cited a two-subject fragment (a backup design,
 and an unrelated second subject) landed holding only the first; approving it
 archived the fragment, and the second subject was gone. An operation now carries only the
-fragments it covers; the rest stay in short-term for a later sleep.
+fragments it covers; the rest stay in short-term for a later sleep, named on the
+operation as left_short_ids so the reviewer sees them.
 """
 from __future__ import annotations
 
@@ -82,6 +83,7 @@ def test_the_second_subject_is_not_archived_by_the_backup_core(memory, make_hipp
     did = h.sleep()["draft_id"]
     op = memory.get(f"/drafts/{did}").json()["operations"][0]
     assert two_subjects not in op["source_short_ids"] and other in op["source_short_ids"]
+    assert op["left_short_ids"] == [two_subjects], "the reviewer is shown what stays"
     assert any("carries less than half" in m for m in said)
     review(memory, did, [{"op": 0, "verdict": "approve"}])
     ids = {e["id"] for e in memory.get("/short", params={"limit": 50}).json()["entries"]}
@@ -96,3 +98,4 @@ def test_a_redraft_carries_only_what_it_covers_too(memory, make_hippo):
     review(memory, did, [{"op": 0, "verdict": "deny", "critique": "say the model"}])
     op = memory.get(f"/drafts/{h.tend()['resubmitted'][0]['draft_id']}").json()["operations"][0]
     assert op["source_short_ids"] == [] and op["evidence_count"] == 1 and op["content"] == MODEL_ONLY
+    assert op["left_short_ids"] == [two_subjects]
