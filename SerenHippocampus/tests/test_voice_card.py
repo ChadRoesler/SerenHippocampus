@@ -23,7 +23,7 @@ from conftest import as_json, review, short
 from seren_hippocampus.config import load_config
 from seren_hippocampus.voice import VoiceError
 
-CARD = "I'm the assistant, they/them. First person, always. The user's dreams of me are theirs; I keep what fits."
+CARD = "I'm the assistant, they/them. First person, always. The user's stories about me are theirs; I keep what fits."
 
 
 def _on(make_hippo, **kw):

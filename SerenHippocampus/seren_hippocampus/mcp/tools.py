@@ -63,6 +63,7 @@ TOOL_NAMES: tuple[str, ...] = (
     "sleep_status",
     "sleep_now",
     "tend_now",
+    "retell_now",
     "check_now",
     "nudge",
     "sleep_history",
@@ -371,6 +372,38 @@ class HippocampusToolImpl:
         if rep.get("memory_reachable") is False:
             return rep
         return {"ok": not rep.get("error"), "message": _say_tend(rep), "report": rep}
+
+    async def retell_now(self, limit: int = 12, min_tokens: int = 80) -> dict:
+        """A retell pass NOW: the fattest long-term cores that still ARE their
+        episode get a retelling proposed, as one terminal draft for your review.
+
+        A core is the retelling - what you would say if asked 'remember
+        that?', a paragraph at most - and the glitter hangs under it. Cores
+        promoted before 21 Oct 2026 were whole episodes (median 110 tokens on
+        one persona store), so they are reshaped this way: the small model proposes
+        a retelling for each of up to `limit` cores of at least `min_tokens`
+        that carry no episode yet; Memory's retell operation replaces the
+        wording and hangs the old wording under the core as its episode, so
+        nothing is lost and undo_restate brings it back. The draft is
+        terminal: approve, approve with your own edited_content, or deny.
+
+        Costs: one model call per core. Refuses while a draft chain is open
+        (one at a time, like a sleep) and without a model (a retelling is a
+        judgement). Blocks until done. busy: true if a sleep or tend is
+        already running.
+        """
+        rep = await self._run(lambda: self.h.retell(limit, min_tokens), "retold")
+        if rep is None:
+            return {"ok": False, "busy": True, "message": BUSY}
+        if rep.get("memory_reachable") is False:
+            return rep
+        if rep.get("refused"):
+            return {"ok": False, "refused": True, "message": rep["refused"], "report": rep}
+        msg = (f"retell pass: {rep.get('proposed', 0)} of {rep.get('candidates', 0)} candidate core(s) proposed"
+               + (f" in draft {rep['draft_id']}; review_draft it" if rep.get("draft_id") else "")
+               + (f"; skipped {rep['skipped']}" if rep.get("skipped") else "")
+               + (f"; error: {rep['error']}" if rep.get("error") else ""))
+        return {"ok": not rep.get("error"), "message": msg, "report": rep}
 
     async def nudge(self) -> dict:
         """'Your turn.' Tell the hippocampus to carry on NOW instead of at

@@ -171,6 +171,14 @@ class SleepConfig(BaseModel):
     # A topic cluster needs this many short-terms to be proposed at all,
     # unless a brief hint, a pin or a verbatim flag says otherwise.
     promote_min_evidence: int = 3
+    # A matched promote hint lowers a cluster's bar to this (never below 1,
+    # never above promote_min_evidence). 1 is the documented default: the
+    # brief turns a one-off into an inside joke. One instance runs 2
+    # (21 Oct 2026): on that store 80 of 132 drafted cores carried one
+    # episode's evidence, because the brief waved singletons through, so a
+    # hinted topic still needs two short-terms there; a pin or a verbatim
+    # flag still promotes one.
+    hint_min_evidence: int = 1
     # The draft cap: attempts per chain, the last submitted terminal (the
     # reviewer may then edit on approve, and a denial ends the chain - no
     # endless draft/critique loop). Held to 1-10: 1 = one draft, no redraft.

@@ -282,7 +282,7 @@ def grounded(text: str, entries: list[dict[str, Any]]) -> bool:
 # Stamped on every draft with the model that wrote it (Memory's /audit groups
 # by it). Bump this when a drafting or redrafting prompt changes, so a change
 # in the numbers can be told apart from a change of model (26 Sept 2026).
-PROMPT_VERSION = "2026-10-03"                             # scaffolding cut from content; an op carries only the fragments it covers
+PROMPT_VERSION = "2026-10-21"                             # a core is the retelling; a memory's fragments are one core, kept under it
 
 
 class Busy(RuntimeError):
@@ -572,6 +572,181 @@ class Hippocampus:
             return self._tend(redraft)
         finally:
             self._lock.release()
+
+    _last_retell: str = ""
+
+    def retell(self, limit: int = 12, min_tokens: int = 80) -> dict[str, Any]:
+        """A retell pass, by hand (POST /retell, the MCP retell_now): the
+        fattest cores that still ARE their episode get a retelling proposed,
+        as one terminal draft the reviewer lands - approve, approve with
+        their own edited_content, or deny. Memory's retell operation hangs
+        the old wording under the core as its episode, so nothing is lost.
+
+        Why a pass and not a migration script (21 Oct 2026): the cores on
+        one persona store were promoted as whole episodes (median 110 tokens, 90
+        of 146 with no satellite), and reshaping a memory is the
+        consolidator's proposal with the reviewer's verdict, not a script's.
+        One chain at a time, like a sleep. Needs the model: a retelling is a
+        judgement, and mechanical mode makes none."""
+        if not self._lock.acquire(blocking=False):
+            raise Busy("a sleep or tend is already running")
+        try:
+            start = time.time()
+            report: dict[str, Any] = {"started_at": start, "examined": 0, "candidates": 0, "proposed": 0,
+                                      "skipped": {}, "samples": [], "draft_id": None, "refused": None, "error": None}
+            self._model_failures = []
+            try:
+                if not self.model_configured:
+                    report["refused"] = "no model: a retelling is a judgement, and mechanical mode makes none"
+                    return report
+                if self._open_chain():
+                    report["refused"] = "a draft chain is open; it lands before a retell pass starts"
+                    return report
+                rows = self._mem.long_entries(include_satellites=True)
+                cores = [r for r in rows if (r.get("metadata") or {}).get("kind", "core") == "core"
+                         and not (r.get("metadata") or {}).get("forget_flag")]
+                report["examined"] = len(cores)
+                told: set[str] = set()
+                for r in rows:
+                    m = r.get("metadata") or {}
+                    if m.get("kind") == "satellite" and m.get("core_id") and (m.get("was_core") or m.get("kept_episode")):
+                        told.add(str(m["core_id"]))
+                fat = [r for r in cores
+                       if len(r.get("content") or "") >= int(min_tokens) * 4 and r["id"] not in told
+                       and not (r.get("metadata") or {}).get("preserved_verbatim")]
+                fat.sort(key=lambda r: -len(r.get("content") or ""))
+                report["candidates"] = len(fat)
+                ops: list[dict[str, Any]] = []
+                skipped: dict[str, int] = {}
+                for r in fat[:max(1, int(limit))]:
+                    why, text = self._retell_one(r)
+                    if why:
+                        skipped[why] = skipped.get(why, 0) + 1
+                        if len(report["samples"]) < 3:          # what the model actually said, for whoever reads the report
+                            report["samples"].append({"core_id": r["id"], "why": why,
+                                                      "original_tokens": len(r.get("content") or "") // 4,
+                                                      "answer": (self._last_retell or "")[:400]})
+                        continue
+                    ops.append({"kind": "retell", "target_core_id": r["id"], "content": text,
+                                "topic": (r.get("metadata") or {}).get("topic"),
+                                "rationale": f"retold from {len(r.get('content') or '') // 4} tokens"})
+                report["skipped"] = skipped
+                if ops:
+                    out = self._mem.submit_draft({
+                        "summary": f"retell pass: {len(ops)} core(s) said the way they would be retold",
+                        "operations": ops, "attempt": 1, "terminal": True,
+                        "extra": {**self._stamp(), "pass": "retell"}})
+                    report["draft_id"] = out.get("id")
+                    report["proposed"] = len(ops)
+                    try:
+                        note = self._mem.add_near(
+                            f"A retell pass with {len(ops)} operation(s) waits for your review: review_draft "
+                            f"{out.get('id')}. Each replaces a core's wording with a retelling and keeps the old "
+                            "wording under it as its episode; approve, approve with your own edited_content, or deny.",
+                            topic="hippocampus, review", trigger_type="always")
+                        notes = dict(self.state.get("review_notes") or {})
+                        notes[str(out.get("cluster_id") or out.get("id"))] = note.get("id")
+                        self.state["review_notes"] = notes
+                    except Exception as e:  # noqa: BLE001 - the note is a courtesy, the draft is the record
+                        self._log(f"could not leave the review note: {e}")
+                    self._emit("retell_proposed", draft_id=out.get("id"), operations=len(ops), skipped=skipped)
+                    self._log(f"retell pass: submitted draft {out.get('id')} with {len(ops)} operation(s)")
+                elif self._model_failures:
+                    raise RuntimeError("the model could not retell: " + "; ".join(
+                        f["why"] for f in self._model_failures[:3]))
+            except (MemoryError, Exception) as e:  # noqa: BLE001
+                report["error"] = f"{type(e).__name__}: {e}"
+                self._log(f"retell error: {report['error']}")
+            report["model_failures"] = list(self._model_failures)
+            report["finished_at"] = time.time()
+            self.state["last_retell"] = report
+            self._remember_run("retell", report, proposed=report["proposed"], candidates=report["candidates"],
+                               draft_id=report["draft_id"])
+            self._save_state()
+            try:
+                if self.model.started_by_us:
+                    self.model.maybe_stop()
+            except Exception as e:  # noqa: BLE001
+                self._log(f"model stop check failed: {e}")
+            return report
+        finally:
+            self._lock.release()
+
+    def _retell_one(self, core: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+        """(why it was skipped, the retelling). One model call per core. What
+        comes back must be shorter than the core, grounded in it (no new
+        names or numbers), and not the core's own words."""
+        old = (core.get("content") or "").strip()
+        self._last_retell = ""
+        # A small model follows a number better than 'under half' (21 Oct 2026:
+        # asked for half, Qwen3-4B handed back tighter logs at 70%, every flag
+        # and file name kept), so the budget is words, and the answer is plain
+        # text with a hard token cap and a trim to the last full sentence.
+        budget = max(25, min(70, len(old.split()) // 3))
+        prompt = (
+            f"{self.voice.block()}"
+            "You are a memory consolidator's drafting worker. Below is one long-term memory as it was first "
+            "written: an episode, promoted whole. Write the RETELLING of it: what the person would say if asked "
+            f"'remember that?' - two to four sentences, AT MOST {budget} WORDS, the memory with its point (a "
+            "lesson some nights, the fun on others), present tense, first person ONLY where the original is. A "
+            "memory about someone else stays about them: he stays he, they stay they, and 'he tried' never becomes "
+            "'I tried'. Keep the names, the one number or quoted phrase that matters, and every person's pronouns "
+            "exactly as the original has them; drop file names, flags, ids, versions and step-by-step detail; add "
+            "nothing that is not in the original. Copying the original, or writing something nearly as long, is a "
+            "failure. Answer "
+            "with the retelling only: plain text, no JSON, no quotes, no preamble.\n\n"
+            "Example 1\nMemory: 21 Oct 2026, ~00:10: the night the power went out at the cabin. We played cards by "
+            "headlamp for hours, the neighbour's dog came in from the rain and would not leave, and nobody could "
+            "find the fuse box. Someone found a bottle of elderflower cordial in the pantry and declared it the "
+            "house drink, and by morning the dog had eaten half the deck.\n"
+            "Retelling: The cabin blackout: cards by headlamp, the dog in from the rain, elderflower as the "
+            "house drink, and half the deck gone by morning.\n\n"
+            "Example 2\nMemory: 4 Oct 2026, ~14:00: the hippocampus kept re-drafting memories that had already "
+            "landed, because the 3 Oct guard did not catch an operation whose text skipped a sentence of a "
+            "fragment it cited, so the fragment stayed in short-term and was drafted again the next night. Fix in "
+            "Memory: the review takes edited_source_short_ids on approval at any attempt, replacing the drafted "
+            "list, and refuses a name that is not in short-term; get_draft shows sources_check and "
+            "left_in_short_term with the full text, earlier citations included. tests/test_edited_sources.py (5); "
+            "211 pass.\n"
+            "Retelling: The night I found the hippocampus drafting the same memories twice: an operation could "
+            "skip a sentence of a fragment it cited and the fragment stayed behind. The fix was letting the "
+            "reviewer name the sources on approval, and showing what an operation would leave in short-term.\n\n"
+            f"Memory ({len(old) // 4} tokens):\n{old[:4000]}\nRetelling:")
+        try:
+            raw = self._call_model(prompt, max_tokens=min(240, int(self._cfg.model.max_tokens)))
+        except Exception as e:  # noqa: BLE001
+            self._model_failure("retell", core.get("id"), f"{type(e).__name__}: {e}")
+            return "model_failed", None
+        self._last_retell = raw
+        text = self._retold_text(raw)
+        if not text:
+            return "no_text", None
+        text, _ = strip_scaffolding(text)
+        if text == old:
+            return "unchanged", None
+        if len(text) > len(old) * 2 // 3:
+            return "not_shorter", None                    # a retelling is not the original lightly trimmed
+        if not grounded(text, [{"content": old}]):
+            return "ungrounded", None
+        return None, text
+
+    def _retold_text(self, raw: str) -> str:
+        """The retelling in a model's answer: JSON content if it sent JSON,
+        else the text, minus a 'Retelling:' lead and wrapping quotes, cut
+        back to the last full sentence when the token cap cut it off."""
+        t = (raw or "").strip()
+        parsed = self._json_from(t)
+        if isinstance(parsed, dict):
+            t = str(parsed.get("content") or "").strip()
+        elif isinstance(parsed, str):
+            t = parsed.strip()
+        t = re.sub(r"^(answer|retelling)\s*:\s*", "", t, flags=re.I).strip()
+        if len(t) >= 2 and t[0] in "\"'\u201c" and t[-1] in "\"'\u201d":
+            t = t[1:-1].strip()
+        if t and not re.search(r"[.!?][\"'\u201d)\]]*$", t):
+            cut = max(t.rfind(". "), t.rfind("! "), t.rfind("? "), t.rfind(".\n"))
+            t = t[:cut + 1].strip() if cut > 0 else ""
+        return t
 
     def redraft_due(self, now: Optional[float] = None) -> bool:
         """Whether this turn of the loop may redraft - the one part of a tend
@@ -1183,7 +1358,7 @@ class Hippocampus:
             for h in noise:
                 hits.setdefault(("noise", h), []).append(topic)
         if kept:
-            threshold = 1
+            threshold = min(threshold, max(1, int(self._cfg.sleep.hint_min_evidence)))
         if noise:
             threshold = 10 ** 6
         if not pinned and len(remaining) < threshold:
@@ -1330,7 +1505,10 @@ class Hippocampus:
             "Rules: attach = the fragments are more evidence for an existing core (content = a one-line "
             "episode summary; restated_content only if the core's wording should change). supersede = the "
             "fragments contradict or replace an existing core (content = the new statement). new_core = "
-            "nothing existing covers it (content = one durable statement, present tense, no preamble). "
+            "nothing existing covers it (content = the retelling: what the person would say to 'remember "
+            "that?', a paragraph at most, the memory with its point, present tense, no preamble; never a "
+            "fragment's own words copied, since the fragments are kept under the core as its episodes when "
+            "it lands, so the core need not carry every detail). "
             "Use core ids exactly as given and never "
             "invent one. To attach to (or supersede) a new_core you propose in this same answer, give "
             '"target_op": <that new_core\'s position in your list, from 0> instead of target_core_id. '
@@ -1338,7 +1516,8 @@ class Hippocampus:
             "every fragment shown: a fragment is archived when its operation is approved, so citing one "
             "the operation does not cover loses it. One operation for each separate memory the "
             "fragments hold, never more operations than fragments, and none for a fragment an existing "
-            "core already covers: a memory is one operation, not one per sentence. Say only what the "
+            "core already covers: a memory is one operation, not one per sentence, and fragments about the "
+            "same memory are ONE new_core citing all of them, not one core each. Say only what the "
             "fragments say - nothing from the cores or the card that the fragments do not. Leave restated_content out unless "
             "the core's own wording must change, and never repeat content in it. Keep each rationale to "
             "one short sentence. Weigh the steer when there is one: it says what mattered, which the "

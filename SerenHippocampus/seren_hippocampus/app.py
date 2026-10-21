@@ -414,6 +414,16 @@ def create_app(config: Optional[HippocampusConfig] = None,
         except Busy as e:
             raise HTTPException(409, str(e))
 
+    @app.post("/retell")
+    async def retell_now(request: Request, limit: int = 12, min_tokens: int = 80):
+        """A retell pass by hand: the fattest cores that still are their
+        episode get a retelling proposed, as one terminal draft for review."""
+        h: Hippocampus = request.app.state.hippocampus
+        try:
+            return await asyncio.to_thread(h.retell, limit, min_tokens)
+        except Busy as e:
+            raise HTTPException(409, str(e))
+
     app.add_middleware(bearer_auth_middleware(bearer))                                   # inner
     app.add_middleware(RequestLoggingMiddleware, service_name="seren-hippocampus",     # outer
                        env_prefix="SEREN_HIPPOCAMPUS")

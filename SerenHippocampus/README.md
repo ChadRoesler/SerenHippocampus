@@ -145,8 +145,17 @@ The main model writes it (`submit_brief` on Memory: a summary of what
 mattered, `promote_hints`, `noise_hints`, `completed_intents`). It is how
 the hippocampus is not making every decision alone, and it is what turns a
 one-off joke into an inside joke. A matched promote hint drops a topic's
-promotion threshold to one and a matched noise hint raises it out of reach,
-so a running bit becomes a core from few fragments and a one-off never does.
+promotion threshold to `hint_min_evidence` (one by default; a pin or a
+verbatim flag still promotes one) and a matched noise hint raises it out of
+reach, so a running bit becomes a core from few fragments and a one-off
+never does. One instance runs `hint_min_evidence: 2`: measured on that
+store on 21 Oct 2026, 80 of 132 drafted cores carried one episode's
+evidence, because the brief waved singletons through, so there a hinted
+topic still needs two short-terms. The worker is told what a core is
+(prompt 2026-10-21): the retelling, what the person would say to "remember
+that?", a paragraph at most, never a fragment's own words, and the
+fragments about one memory are one core; Memory keeps those fragments
+under the core as its episodes when it lands.
 The summary itself, plus the hints that matched this cluster, go into the
 drafting worker's prompt as the *steer*, marked as written by the main model
 or pulled from the fragments. A brief steers the one sleep it opened and is
@@ -233,6 +242,22 @@ failed start the next attempt waits `retry_after_seconds`. `/status` carries
 `model_lifecycle`; events `model_started`, `model_stopped`,
 `model_start_failed`.
 
+## The retell pass
+
+A core is the retelling - what the person would say if asked "remember
+that?", a paragraph at most - and the episodes hang under it. Cores promoted
+before 21 Oct 2026 were whole episodes (median 110 tokens on one persona store,
+90 of 146 with no satellite), so there is a pass to reshape them through the
+same review loop, not a migration script: `POST /retell?limit=12&min_tokens=80`
+(the MCP `retell_now`) asks the small model for a retelling of each of the
+fattest cores that carry no episode yet, keeps only answers that are shorter,
+grounded in the original and not its own words, and submits them as one
+terminal draft of Memory `retell` operations. Memory replaces each core's
+wording and hangs the old wording under it as its episode (`was_core`), so
+nothing is lost and `undo_restate` brings it back. The reviewer approves,
+approves with their own `edited_content`, or denies. One chain at a time,
+like a sleep; needs the model.
+
 ## Mechanical mode
 
 With no model configured (`model.url: ""`) the hippocampus still sleeps:
@@ -268,6 +293,7 @@ Seren service.
 | `POST /sleep`  | sleep now by hand, on the open brief; with none waiting it asks for one (`?without_brief=true` drafts unsteered). 409 if busy |
 | `POST /nudge`  | "your turn": run a tick now instead of at the next interval; returns at once |
 | `POST /tend`   | pick up denied operations now; cull chains that landed |
+| `POST /retell` | a retell pass: the fattest cores that still are their episode, as one terminal draft (`limit`, `min_tokens`) |
 | `POST /check`  | check for a brief now; sleep on it if there is one    |
 | `GET /queue`   | what is waiting for review, read from Memory          |
 | `GET /history` | the last runs, newest first                           |
@@ -291,6 +317,7 @@ the same bearer as every other route:
 | `sleep_now`     | sleep now on the open brief; with none waiting it asks for one (`without_brief=true` drafts unsteered) |
 | `nudge`         | "your turn": the last thing to call after `submit_brief` or `review_draft`. Returns at once; the hippocampus carries on now |
 | `tend_now`      | redraft what was just denied, cull chains that landed, now instead of next tick |
+| `retell_now`    | a retell pass: up to `limit` cores of `min_tokens` or more that carry no episode yet, retold by the small model as one terminal draft for your review |
 | `check_now`     | one tick by hand: purge, then sleep only if the gate is really open      |
 | `sleep_history` | the last runs, newest first                                             |
 | `audit_sleeps`  | per-model numbers and the last few chains - verdicts and critiques, not the wording (that is Memory's `audit_drafts`) |

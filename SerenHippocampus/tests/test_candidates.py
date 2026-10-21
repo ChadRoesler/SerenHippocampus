@@ -35,11 +35,11 @@ def _attach(memory, core: str, content: str) -> None:
 def test_a_satellite_hit_brings_its_core(memory, make_hippo):
     h = make_hippo()
     core = _core(memory, "The user makes board games.", "games")
-    sat = "Dice Race is a push-your-luck dice race styled as an 8-bit platformer."
+    sat = "Tidewater is a push-your-luck tile game set in a flooding harbour."
     _attach(memory, core, sat)
     hits = [{"id": "s1", "tier": "long", "content": sat, "metadata": {"kind": "satellite", "core_id": core}}]
     h._mem.search_long = lambda q, n=5: hits                 # only the satellite came back, as it did live
-    got = h._candidates([{"content": "Dice Race has a boss expansion."}])
+    got = h._candidates([{"content": "Tidewater has a boss expansion."}])
     assert [c["id"] for c in got] == [core]
     assert got[0]["content"] == "The user makes board games." and got[0]["topic"] == "games"
     assert got[0]["satellites"] == 1 and got[0]["via"] == sat
@@ -50,10 +50,10 @@ def test_the_real_search_finds_a_core_through_its_satellites(memory, make_hippo)
     not dropped before the hippocampus can follow them home."""
     h = make_hippo()
     core = _core(memory, "The user makes board games.")
-    _attach(memory, core, "Dice Race is a dice race with cheat codes.")
-    rows = h._mem.search_long("Dice Race is a dice race with cheat codes.", n=5)
+    _attach(memory, core, "Tidewater is a tile game with cheat codes.")
+    rows = h._mem.search_long("Tidewater is a tile game with cheat codes.", n=5)
     assert any((r.get("metadata") or {}).get("kind") == "satellite" for r in rows)
-    assert core in [c["id"] for c in h._candidates([{"content": "Dice Race is a dice race with cheat codes."}])]
+    assert core in [c["id"] for c in h._candidates([{"content": "Tidewater is a tile game with cheat codes."}])]
 
 
 def test_one_search_per_fragment_finds_both_subjects(memory, make_hippo):
@@ -63,7 +63,7 @@ def test_one_search_per_fragment_finds_both_subjects(memory, make_hippo):
     def search(q, n=5):
         asked.append(q)
         if q == "the feet story":
-            return [{"id": "kdm", "tier": "long", "content": "KDM stories.", "metadata": {"kind": "core", "topic": "kdm"}}]
+            return [{"id": "camp", "tier": "long", "content": "Camping stories.", "metadata": {"kind": "core", "topic": "camping"}}]
         if q == "the nudge":
             return [{"id": "hip", "tier": "long", "content": "The nudge.", "metadata": {"kind": "core"}}]
         return []                                            # the two glued together are near neither

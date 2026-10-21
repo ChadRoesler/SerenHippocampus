@@ -105,10 +105,10 @@ def test_an_approved_operation_named_by_number_is_its_core(memory, make_hippo):
         return as_json({"kind": "attach", "target_core_id": "0", "content": "Playtested time and time again."})
     h = make_hippo(model=model)
     h._candidates = lambda entries: []                                           # type: ignore
-    did = _draft(memory, h, [{"kind": "new_core", "content": "Dice Race is the user's board game."},
+    did = _draft(memory, h, [{"kind": "new_core", "content": "Tidewater is the user's board game."},
                              {"kind": "new_core", "content": "x"}],
                  [{"op": 0, "verdict": "approve"},
-                  {"op": 1, "verdict": "deny", "critique": "Make this an attach with target_op 0 (the Dice Race core)."}])
+                  {"op": 1, "verdict": "deny", "critique": "Make this an attach with target_op 0 (the Tidewater core)."}])
     made = memory.get(f"/drafts/{did}").json()["operations"][0]["long_term_id"]
     t = h.tend()
     assert f"op 0: approved - it is core ({made}) now" in prompts[-1]
@@ -124,12 +124,12 @@ def test_an_operation_being_redrafted_beside_it_becomes_target_op(memory, make_h
         if "What you proposed (operation 1)" in p:
             assert "op 0: denied too and being redrafted now" in p
             return as_json({"kind": "attach", "target_op": 0, "content": "The Boss expansion is half baked."})
-        return as_json({"kind": "new_core", "content": "Dice Race is the user's dice-race board game."})
+        return as_json({"kind": "new_core", "content": "Tidewater is the user's tile-laying board game."})
     h = make_hippo(model=model)
     h._candidates = lambda entries: []                                           # type: ignore
     _draft(memory, h, [{"kind": "new_core", "content": "a game"}, {"kind": "new_core", "content": "x"}],
            [{"op": 0, "verdict": "deny", "critique": "say which game and what kind"},
-            {"op": 1, "verdict": "deny", "critique": "Attach with target_op 0, the Dice Race core op 0 should become."}])
+            {"op": 1, "verdict": "deny", "critique": "Attach with target_op 0, the Tidewater core op 0 should become."}])
     ops = _redraft_ops(memory, h.tend())
     assert [o["kind"] for o in ops] == ["new_core", "attach"]
     assert ops[1]["target_op"] == 0 and ops[1]["target_core_id"] is None and "_wants_op" not in ops[1]

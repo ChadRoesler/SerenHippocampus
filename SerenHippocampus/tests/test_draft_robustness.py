@@ -74,26 +74,26 @@ def test_a_pile_yields_a_few_operations_not_one_per_sentence(make_hippo, memory)
 
 
 def test_an_operation_cites_only_the_fragments_it_came_from():
-    entries = [{"id": "kdm", "content": "The user's tank died of a lion flashback in Kingdom Death, vestphobia and all"},
+    entries = [{"id": "crawl", "content": "The user's knight died of a dragon flashback in Dungeon Crawl, armour phobia and all"},
                {"id": "nuc", "content": "the NUC moved to jammy and the port changed to 7267"},
-               {"id": "kdm2", "content": "the tank ripped off his rawhide vest: vestphobia, in Kingdom Death"}]
-    text = "In Kingdom Death, the user's tank got vestphobia, ripped off his rawhide vest, and died of a lion flashback."
+               {"id": "crawl2", "content": "the knight threw off his plate armour: armour phobia, in Dungeon Crawl"}]
+    text = "In Dungeon Crawl, the user's knight got armour phobia, threw off his plate armour, and died of a dragon flashback."
     assert cited_fragments(text, [0, 1, 2], entries) == [0, 2], "the NUC fragment is not what this says"
     assert cited_fragments(text, [1], entries) == [1], "one citation is left alone"
     assert cited_fragments("", [0, 1], entries) == [0, 1], "nothing to compare: left alone"
 
 
 def test_an_operation_not_drawn_from_the_fragments_is_dropped(make_hippo, memory):
-    """The real 4B, 30 Sept 2026: a Kingdom Death pile came back with a
+    """The real 4B, 30 Sept 2026: a Dungeon Crawl pile came back with a
     'verbatim' operation that was the dream CORE's text, copied from the cores
     it was shown. No fragment in the pile says it."""
     from seren_hippocampus.sleep import grounded
-    kdm = ("The user's first KDM story: a new campaign with horrible luck, they barely survived the opening White Lion "
-           "fight, the tank wore the full rawhide set, drew Lion in heat, rolled Vestphobia and ripped off his vest")
+    crawl = ("The user's first crawl story: a new campaign with horrible luck, they barely survived the opening Red Dragon "
+         "fight, the knight wore the full plate set, drew Dragon in heat, rolled Armourphobia and threw off his plate")
     dream = ("In the user's dream, the assistant is a gardener, tall, a green scarf and muddy boots, who greets with "
              "a wave and a cup of tea")
-    own = "The user's first KDM campaign had horrible luck: the tank in the full rawhide set rolled Vestphobia against the White Lion."
-    entries = [{"id": "k", "content": kdm}]
+    own = "The user's first crawl campaign had horrible luck: the knight in the full plate set rolled Armourphobia against the Red Dragon."
+    entries = [{"id": "k", "content": crawl}]
     assert grounded(own, entries) is True and grounded(dream, entries) is False
     assert grounded("x", entries) is True and grounded(dream, [{"id": "s", "content": "a"}]) is True, "too short to judge"
     h = make_hippo(model=lambda p: as_json({"operations": [
@@ -101,10 +101,10 @@ def test_an_operation_not_drawn_from_the_fragments_is_dropped(make_hippo, memory
         {"kind": "verbatim", "content": dream, "rationale": "x", "source_indexes": [0]}]}), promote_min_evidence=1)
     said: list[str] = []
     h._log = said.append
-    short(memory, kdm, "alice,kdm")
+    short(memory, crawl, "alice,crawl")
     did = h.sleep()["draft_id"]
     ops = memory.get(f"/drafts/{did}").json()["operations"]
-    assert [op["kind"] for op in ops] == ["new_core"] and "Vestphobia" in ops[0]["content"]
+    assert [op["kind"] for op in ops] == ["new_core"] and "Armourphobia" in ops[0]["content"]
     assert any("not in the fragments" in m for m in said)
 
 
@@ -112,12 +112,12 @@ def test_a_restatement_that_repeats_the_content_is_dropped(make_hippo, memory):
     core = memory.post("/drafts", json={"operations": [{"kind": "new_core", "content": "A dream the user described.", "topic": "t"}]}).json()["id"]
     from conftest import review
     cid = review(memory, core, [{"op": 0, "verdict": "approve"}])["results"][0]["long_term_id"]
-    same = "In the user's dream, the assistant has freckles."
+    same = "In the user's dream, the assistant has a green scarf."
     h = make_hippo(model=lambda p: as_json({"operations": [
         {"kind": "attach", "target_core_id": cid, "content": same, "restated_content": same,
          "rationale": "x", "source_indexes": [0]}]}), promote_min_evidence=1)
     h._candidates = lambda entries: [{"id": cid, "content": "A dream the user described.", "topic": "t"}]   # type: ignore[method-assign]
-    short(memory, "the dream: freckles in the sun", "t")
+    short(memory, "the dream: a green scarf in the rain", "t")
     did = h.sleep()["draft_id"]
     op = memory.get(f"/drafts/{did}").json()["operations"][0]
     assert op["kind"] == "attach" and not op.get("restated_content")

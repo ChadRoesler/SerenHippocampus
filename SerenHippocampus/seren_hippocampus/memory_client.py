@@ -88,6 +88,14 @@ class MemoryClient:
             return None
         return {**core, "satellites": int(got.get("count") or 0)}
 
+    def long_entries(self, include_satellites: bool = True,
+                     include_superseded: bool = False) -> list[dict[str, Any]]:
+        """The whole shelf in one read: cores, and their satellites when asked
+        (a retell pass needs to see which cores already carry their episode)."""
+        got = self._req("GET", "/long", params={"include_satellites": str(bool(include_satellites)).lower(),
+                                                "include_superseded": str(bool(include_superseded)).lower()})
+        return list((got or {}).get("entries") or []) if isinstance(got, dict) else []
+
     def drafts(self, status: Optional[str] = None, limit: int = 200) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"limit": limit}
         if status:
