@@ -575,7 +575,8 @@ class Hippocampus:
 
     _last_retell: str = ""
 
-    def retell(self, limit: int = 12, min_tokens: int = 80) -> dict[str, Any]:
+    def retell(self, limit: int = 12, min_tokens: int = 80,
+               core_ids: Optional[list[str]] = None) -> dict[str, Any]:
         """A retell pass, by hand (POST /retell, the MCP retell_now): the
         fattest cores that still ARE their episode get a retelling proposed,
         as one terminal draft the reviewer lands - approve, approve with
@@ -587,7 +588,9 @@ class Hippocampus:
         of 146 with no satellite), and reshaping a memory is the
         consolidator's proposal with the reviewer's verdict, not a script's.
         One chain at a time, like a sleep. Needs the model: a retelling is a
-        judgement, and mechanical mode makes none."""
+        judgement, and mechanical mode makes none. `core_ids` names the cores
+        to take instead of the fattest (a measurement's targets, say); the
+        bar and the already-told check still apply."""
         if not self._lock.acquire(blocking=False):
             raise Busy("a sleep or tend is already running")
         try:
@@ -611,10 +614,14 @@ class Hippocampus:
                     m = r.get("metadata") or {}
                     if m.get("kind") == "satellite" and m.get("core_id") and (m.get("was_core") or m.get("kept_episode")):
                         told.add(str(m["core_id"]))
+                want = {str(c) for c in (core_ids or [])}
                 fat = [r for r in cores
                        if len(r.get("content") or "") >= int(min_tokens) * 4 and r["id"] not in told
-                       and not (r.get("metadata") or {}).get("preserved_verbatim")]
+                       and not (r.get("metadata") or {}).get("preserved_verbatim")
+                       and (not want or r["id"] in want)]
                 fat.sort(key=lambda r: -len(r.get("content") or ""))
+                if want:
+                    report["targets"] = {"asked": len(want), "candidates": len(fat)}
                 report["candidates"] = len(fat)
                 ops: list[dict[str, Any]] = []
                 skipped: dict[str, int] = {}

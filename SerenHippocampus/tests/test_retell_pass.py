@@ -92,6 +92,15 @@ def test_a_plain_text_answer_is_taken_and_a_cut_off_tail_is_trimmed(make_hippo, 
                              "'Everything else can wait for spring', the note said.")
 
 
+def test_named_cores_are_taken_instead_of_the_fattest(make_hippo, memory):
+    a, b, c = _core(memory, FAT), _core(memory, FAT2), _core(memory, THIN)
+    rep = make_hippo(model=_model(RETOLD)).retell(limit=5, min_tokens=20, core_ids=[b, c, "nope"])
+    assert rep["targets"] == {"asked": 3, "candidates": 1}, "the thin one is under the bar, the unknown one is not a core"
+    assert rep["proposed"] == 1
+    d = memory.get(f"/drafts/{rep['draft_id']}").json()
+    assert [op["target_core_id"] for op in d["operations"]] == [b]
+
+
 def test_without_a_model_it_refuses(make_hippo, memory):
     _core(memory, FAT)
     rep = make_hippo().retell()

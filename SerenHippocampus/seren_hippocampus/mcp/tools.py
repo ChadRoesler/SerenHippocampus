@@ -373,7 +373,8 @@ class HippocampusToolImpl:
             return rep
         return {"ok": not rep.get("error"), "message": _say_tend(rep), "report": rep}
 
-    async def retell_now(self, limit: int = 12, min_tokens: int = 80) -> dict:
+    async def retell_now(self, limit: int = 12, min_tokens: int = 80,
+                         core_ids: Optional[list[str]] = None) -> dict:
         """A retell pass NOW: the fattest long-term cores that still ARE their
         episode get a retelling proposed, as one terminal draft for your review.
 
@@ -387,12 +388,13 @@ class HippocampusToolImpl:
         nothing is lost and undo_restate brings it back. The draft is
         terminal: approve, approve with your own edited_content, or deny.
 
-        Costs: one model call per core. Refuses while a draft chain is open
-        (one at a time, like a sleep) and without a model (a retelling is a
-        judgement). Blocks until done. busy: true if a sleep or tend is
-        already running.
+        `core_ids` names the cores to take instead of the fattest (the bar and
+        the already-told check still apply). Costs: one model call per core.
+        Refuses while a draft chain is open (one at a time, like a sleep) and
+        without a model (a retelling is a judgement). Blocks until done.
+        busy: true if a sleep or tend is already running.
         """
-        rep = await self._run(lambda: self.h.retell(limit, min_tokens), "retold")
+        rep = await self._run(lambda: self.h.retell(limit, min_tokens, core_ids), "retold")
         if rep is None:
             return {"ok": False, "busy": True, "message": BUSY}
         if rep.get("memory_reachable") is False:

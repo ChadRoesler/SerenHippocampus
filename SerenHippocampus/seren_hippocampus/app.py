@@ -415,12 +415,15 @@ def create_app(config: Optional[HippocampusConfig] = None,
             raise HTTPException(409, str(e))
 
     @app.post("/retell")
-    async def retell_now(request: Request, limit: int = 12, min_tokens: int = 80):
+    async def retell_now(request: Request, limit: int = 12, min_tokens: int = 80,
+                         body: Optional[dict] = Body(default=None)):
         """A retell pass by hand: the fattest cores that still are their
-        episode get a retelling proposed, as one terminal draft for review."""
+        episode get a retelling proposed, as one terminal draft for review.
+        A body {"core_ids": [...]} names the cores to take instead."""
         h: Hippocampus = request.app.state.hippocampus
+        ids = list((body or {}).get("core_ids") or []) or None
         try:
-            return await asyncio.to_thread(h.retell, limit, min_tokens)
+            return await asyncio.to_thread(h.retell, limit, min_tokens, ids)
         except Busy as e:
             raise HTTPException(409, str(e))
 

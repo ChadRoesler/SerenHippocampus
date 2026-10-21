@@ -69,7 +69,7 @@ def test_one_search_per_fragment_finds_both_subjects(memory, make_hippo):
         return []                                            # the two glued together are near neither
     h._mem.search_long = search
     got = h._candidates([{"content": "the feet story"}, {"content": "the nudge"}])
-    assert {c["id"] for c in got} == {"kdm", "hip"}
+    assert {c["id"] for c in got} == {"camp", "hip"}
     assert asked == ["the feet story", "the nudge", "the feet story the nudge"]
 
 
