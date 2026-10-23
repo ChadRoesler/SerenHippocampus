@@ -15,7 +15,18 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from conftest import cores, review, short
+
+
+def _takes(memory, feature: str) -> bool:
+    return feature in (memory.get("/health").json().get("features") or [])
+
+
+def _needs_retell(memory):
+    if not _takes(memory, "retell"):
+        pytest.skip("the installed seren-memory predates the retell operation")
 
 FAT = ("12 Oct 2026, late: the garden plan, years in the thinking. The raised beds go along the south fence, three of "
        "them, cedar, with the compost bay at the far end; the neighbour offered the old water butt, and the first plan"
@@ -44,6 +55,7 @@ def _model(answers):
 
 
 def test_fat_cores_without_an_episode_are_retold_fattest_first(make_hippo, memory):
+    _needs_retell(memory)
     a, b, c = _core(memory, FAT), _core(memory, FAT2), _core(memory, THIN)
     h = make_hippo(model=_model(RETOLD))
     rep = h.retell(limit=5, min_tokens=20)
@@ -65,6 +77,7 @@ def test_fat_cores_without_an_episode_are_retold_fattest_first(make_hippo, memor
 
 
 def test_the_limit_takes_the_fattest(make_hippo, memory):
+    _needs_retell(memory)
     a, b = _core(memory, FAT), _core(memory, FAT2)
     rep = make_hippo(model=_model(RETOLD)).retell(limit=1, min_tokens=20)
     assert rep["candidates"] == 2 and rep["proposed"] == 1
@@ -73,6 +86,7 @@ def test_the_limit_takes_the_fattest(make_hippo, memory):
 
 
 def test_unchanged_longer_and_ungrounded_answers_are_skipped(make_hippo, memory):
+    _needs_retell(memory)
     _core(memory, FAT)
     for answer, why in ((FAT, "unchanged"), (FAT + " And more, and more, and more.", "not_shorter"),
                         ("Zorblax visited Quendor and sold seventeen zeppelins to Marmaduke.", "ungrounded")):
@@ -81,6 +95,7 @@ def test_unchanged_longer_and_ungrounded_answers_are_skipped(make_hippo, memory)
 
 
 def test_a_plain_text_answer_is_taken_and_a_cut_off_tail_is_trimmed(make_hippo, memory):
+    _needs_retell(memory)
     a = _core(memory, FAT)
     answer = ("Retelling: The garden plan: three cedar beds along the south fence, years in the thinking. "
               "'Everything else can wait for spring', the note said. And then the model kept going without a full st")
@@ -93,6 +108,7 @@ def test_a_plain_text_answer_is_taken_and_a_cut_off_tail_is_trimmed(make_hippo, 
 
 
 def test_named_cores_are_taken_instead_of_the_fattest(make_hippo, memory):
+    _needs_retell(memory)
     a, b, c = _core(memory, FAT), _core(memory, FAT2), _core(memory, THIN)
     rep = make_hippo(model=_model(RETOLD)).retell(limit=5, min_tokens=20, core_ids=[b, c, "nope"])
     assert rep["targets"] == {"asked": 3, "candidates": 1}, "the thin one is under the bar, the unknown one is not a core"
@@ -108,6 +124,7 @@ def test_without_a_model_it_refuses(make_hippo, memory):
 
 
 def test_while_a_chain_is_open_it_refuses(make_hippo, memory):
+    _needs_retell(memory)
     _core(memory, FAT)
     memory.post("/drafts", json={"operations": [{"kind": "new_core", "content": "something pending", "topic": "t"}]})
     rep = make_hippo(model=_model(RETOLD)).retell(limit=5, min_tokens=20)
@@ -115,6 +132,7 @@ def test_while_a_chain_is_open_it_refuses(make_hippo, memory):
 
 
 def test_the_model_failing_is_said_not_swallowed(make_hippo, memory):
+    _needs_retell(memory)
     _core(memory, FAT)
 
     def broken(prompt):
@@ -123,3 +141,11 @@ def test_the_model_failing_is_said_not_swallowed(make_hippo, memory):
     rep = make_hippo(model=broken).retell(limit=5, min_tokens=20)
     assert rep["proposed"] == 0 and rep["skipped"] == {"model_failed": 1}
     assert rep["error"] and "could not retell" in rep["error"] and rep["model_failures"]
+
+
+def test_a_memory_that_predates_retell_is_refused_not_swallowed(make_hippo, memory):
+    _core(memory, FAT)
+    h = make_hippo(model=_model(RETOLD))
+    h._mem.health = lambda: {"ok": True, "features": ["target_op"]}      # type: ignore[method-assign]
+    rep = h.retell(limit=5, min_tokens=20)
+    assert rep["refused"] and "predates the retell" in rep["refused"] and rep["draft_id"] is None

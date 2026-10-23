@@ -67,7 +67,8 @@ function renderOverview(root, status, queue) {
     if (status.sleep_at) lines.push(`Sleeps happen daily at <b>${escapeHtml(status.sleep_at)}</b> local time.`);
     const chk = status.last_check || null;
     if (chk && chk.status === 'waiting_for_brief') lines.push(`It is past bedtime and <b>no brief has arrived</b>${chk.misses ? ` (${escapeHtml(chk.misses)} check${chk.misses === 1 ? '' : 's'} so far)` : ''}. The hippocampus sleeps only on a brief: write one with submit_brief and the next check will draft on it.`);
-    if (chk && chk.status === 'chain_open') lines.push(`A brief is waiting, but a draft is <b>still under review</b>. The sleep starts once that chain has landed.`);
+    if (chk && chk.status === 'chain_open') lines.push(`A sleep is due, but a draft is <b>still under review</b>. The sleep starts once that chain has landed.`);
+    if (chk && chk.status === 'sleeping_without_brief') lines.push(`Bedtime came with no brief, so the hippocampus <b>slept without one</b>: in the aging flow the brief is optional context, not the gate.`);
     if (chk && chk.status === 'not_bedtime') lines.push(`Not bedtime yet. A brief written now would start a sleep on the next check.`);
     if (status.brief_wanted) lines.push(`The hippocampus has <b>asked for a brief</b> before the sleep due ${escapeHtml(status.sleep_due_at ? relAge(status.sleep_due_at) : 'soon')}; the note is waiting in Memory's near-term tier and none has arrived yet.`);
     if (last && !last.error && last.brief_requested) lines.push(last.brief_answered ? `The last sleep ran on a brief <b>the main model wrote</b>.` : `The last sleep asked for a brief and <b>none came</b>, so the small model pulled one from the fragments.`);

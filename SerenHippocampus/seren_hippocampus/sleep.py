@@ -10,19 +10,32 @@ SLEEP (every ~20h)
                                  is newer than the last sleep; otherwise pull
                                  one from recent short-terms with the small
                                  model (Oliver-Twist)
-  3. draft                      group short-terms by topic tag; for each
-                                 cluster worth proposing, show the small model
-                                 the fragments and the nearest existing cores
-                                 and ask for operations - new_core, attach,
-                                 supersede, verbatim - then submit ONE draft
-                                 for the sleep. Short-terms already held by a
-                                 pending draft are left alone (no re-drafting
-                                 the same cluster every run).
-  4. tidy                        age out, maintain near-term, sweep pruned -
-                                 at the END of the cycle: here when the sleep
-                                 drafted nothing, otherwise when its chain
-                                 lands (TEND, _close_chain). Nothing ages out
-                                 while a draft is under review or redraft.
+  3. draft                       THE AGING FLOW (sleep.flow "aging", the
+                                 default since 22 Oct 2026): take only the
+                                 short-terms that reach the end of their week
+                                 before the next sleep, group them by topic
+                                 tag, and for each pile show the small model
+                                 the aging memories whole, the younger ones on
+                                 the same topic (evidence and context, never
+                                 moved) and the nearest cores. Every aging
+                                 memory gets a verdict: support a core (the
+                                 memory itself becomes its satellite), refine
+                                 one (a small change, the core reworded),
+                                 replace one (the core was wrong - quoted),
+                                 a new core (only past the evidence bar), or
+                                 age out. One the model leaves out gets an
+                                 explicit age_out, so the reviewer sees it go.
+                                 Then submit ONE draft for the sleep. Flow
+                                 "all" is the earlier way: every free short-
+                                 term drafted every sleep. Short-terms held
+                                 by a pending draft are left alone either way.
+  4. tidy                        maintain near-term, sweep pruned, and - flow
+                                 "all" only - age out what was not promoted;
+                                 in the aging flow nothing leaves short-term
+                                 but by a verdict. At the END of the cycle:
+                                 here when the sleep drafted nothing,
+                                 otherwise when its chain lands (TEND,
+                                 _close_chain).
 
 TEND (every few minutes)
   A reviewed draft with denied operations and no later attempt in its
@@ -116,11 +129,17 @@ def hint_match(hint: str, tags: frozenset[str], haystack: str, hay_words: set[st
     return "words" if sum(seen(w) for w in words) / len(words) >= HINT_MIN_WORDS else None
 
 
-def cluster_by_tags(shorts: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+def tag_overlap(a: frozenset[str], b: frozenset[str]) -> float:
+    return len(a & b) / len(a | b) if (a or b) else 0.0
+
+
+def cluster_by_tags(shorts: list[dict[str, Any]],
+                    max_size: Optional[int] = None) -> list[tuple[str, list[dict[str, Any]]]]:
     """(topic, memories) piles. A memory joins the pile whose first memory
     shares the most of its tags (at least CLUSTER_MIN_OVERLAP, Jaccard), else
     starts a pile; the pile's topic is its first memory's. Untagged memories
     share one pile. Order is kept: oldest-first input, oldest-first piles."""
+    cap = CLUSTER_MAX if max_size is None else max(1, int(max_size))
     piles: list[tuple[frozenset[str], str, list[dict[str, Any]]]] = []
     untagged: list[dict[str, Any]] = []
     for s in shorts:
@@ -132,9 +151,9 @@ def cluster_by_tags(shorts: list[dict[str, Any]]) -> list[tuple[str, list[dict[s
         best, best_j = None, 0.0
         for pile in piles:
             anchor, _, members = pile
-            if len(members) >= CLUSTER_MAX:
+            if len(members) >= cap:
                 continue
-            j = len(tags & anchor) / len(tags | anchor)
+            j = tag_overlap(tags, anchor)
             if j > best_j:
                 best, best_j = pile, j
         if best is not None and best_j >= CLUSTER_MIN_OVERLAP:
@@ -221,7 +240,8 @@ def _significant(text: str) -> set[str]:
 # on the last attempt with the reviewer editing it out by hand.
 SCAFFOLDING = ("Source fragments", "Existing cores:", "THE CRITIQUE", "The critique, once more",
                "What you proposed", "Other operations in this draft", "Previous content:", "Critique:",
-               "Steer:", "Fragments:", "Topic:", "JSON:", "Operation kind:", "Target core:")
+               "Steer:", "Fragments:", "Topic:", "JSON:", "Operation kind:", "Target core:",
+               "At the end of their week", "Newer memories on this topic")
 
 
 def strip_scaffolding(text: str) -> tuple[str, bool]:
@@ -279,10 +299,54 @@ def grounded(text: str, entries: list[dict[str, Any]]) -> bool:
         return True
     return len(words & pile) / len(words) >= GROUNDED_MIN
 
+
+# ── the aging flow's words (22 Oct 2026) ─────────────────────────────────────
+# The verdicts as the drafting model is asked for them, and what Memory calls
+# each: support and refine are an attach (refine carries the core's new
+# wording), replace is a supersede. A small model answers in either vocabulary.
+AGING_KINDS = {"support": "support", "attach": "support", "refine": "refine", "replace": "replace",
+               "supersede": "replace", "new_core": "new_core", "new": "new_core", "core": "new_core",
+               "verbatim": "new_core", "age_out": "age_out", "ageout": "age_out", "age out": "age_out",
+               "let_go": "age_out", "forget": "age_out", "drop": "age_out"}
+QUOTE_MIN_CHARS = 8
+QUOTE_MIN_SHARE = 0.8
+
+
+def quoted(quote: str, text: str) -> bool:
+    """Whether a replace's 'this is what the core got wrong' is really in the
+    core: the sentence copied (case aside), or nearly all of its words. A
+    replace that cannot show one is support or a refine (refine-vs-replace)."""
+    q = (quote or "").strip().strip("\"'").strip()
+    if len(q) < QUOTE_MIN_CHARS:
+        return False
+    if q.lower() in (text or "").lower():
+        return True
+    qw = _significant(q)
+    return len(qw) >= 3 and len(qw & _significant(text or "")) / len(qw) >= QUOTE_MIN_SHARE
+
+
+def when(entry: dict[str, Any]) -> str:
+    """A memory's date as the model reads it: a critique of 'wrong time' is
+    one a date in the prompt prevents."""
+    ts = (entry.get("metadata") or {}).get("ts")
+    try:
+        return time.strftime("%d %b %Y %H:%M", time.localtime(float(ts)))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "undated"
+
+
+def clip(text: Optional[str], n: int) -> str:
+    """Context cut to fit, and SAID to be cut. The aging memories are never
+    cut: until 22 Oct 2026 every fragment was cut at 400 characters with no
+    marker, and the model copied the cut faithfully - 'pip --no-deps
+    --force-rei' - and was denied for it."""
+    t = (text or "").strip()
+    return t if len(t) <= n else t[:n].rstrip() + " [...cut]"
+
 # Stamped on every draft with the model that wrote it (Memory's /audit groups
 # by it). Bump this when a drafting or redrafting prompt changes, so a change
 # in the numbers can be told apart from a change of model (26 Sept 2026).
-PROMPT_VERSION = "2026-10-21"                             # a core is the retelling; a memory's fragments are one core, kept under it
+PROMPT_VERSION = "2026-10-22"                             # the aging flow: a verdict per memory at the end of its week
 
 
 class Busy(RuntimeError):
@@ -308,6 +372,7 @@ class Hippocampus:
         self._ripple_retry: Optional[dict[str, Any]] = None   # a ripple that was skipped; fired again on the next tick
         self._cut_off = False                              # the last parsed answer ran out of tokens
         self._cut_offs = 0                                 # how many did, this sleep
+        self._refused: dict[str, str] = {}                 # aging flow: short id -> why its verdict was refused
         self._served_model = ""          # what the server said it runs, from its last answer
         # While drafting, every model call is kept here and saved as the
         # draft's replay packet (see seren_hippocampus.replay). None = off.
@@ -472,11 +537,12 @@ class Hippocampus:
         """Which model wrote this draft, flat so Memory keeps it as-is: the
         audit's numbers group by it, and a swap is only visible if every draft
         says who wrote it."""
+        flow = self._cfg.sleep.flow
         if not self.model_configured:
-            return {"model_mode": "mechanical", "model_prompt": PROMPT_VERSION}
+            return {"model_mode": "mechanical", "model_prompt": PROMPT_VERSION, "sleep_flow": flow}
         stamp = {"model_mode": "model", "model_name": self._cfg.model.name,
                  "model_served": self._served_model, "model_url": self._cfg.model.url,
-                 "model_prompt": PROMPT_VERSION}
+                 "model_prompt": PROMPT_VERSION, "sleep_flow": flow}
         # Which voice card the prompts carried: a draft written under v3 of
         # someone's card reads differently from one under v1, or none.
         if self.voice.block():
@@ -510,8 +576,8 @@ class Hippocampus:
     # ── public entry points ───────────────────────────────────────────────
     def sleep(self, ask_for_brief: bool = False) -> dict[str, Any]:
         """Sleep NOW, by hand (POST /sleep, the viewer's button, the MCP
-        sleep_now): on the open brief if there is one. The loop itself never
-        sleeps without a brief - see check().
+        sleep_now): on the open brief if there is one. In flow "all" the loop
+        itself never sleeps without a brief - see check().
 
         ask_for_brief (what the button and the tool pass): with no brief
         waiting, do not draft blind - ASK for one, and let the check sleep on
@@ -521,8 +587,8 @@ class Hippocampus:
         sleep started by hand that morning skipped the brief and drafted 20
         operations unsteered; two of them survived first review. Returns
         asked_for_brief: true and records no sleep, so bedtime does not move.
-        Where nobody can be asked (brief_request off) it sleeps without one,
-        as before.
+        Where nobody can be asked (brief_request off), or in the aging flow
+        where the brief is optional, it sleeps without one.
 
         ONE CYCLE AT A TIME, by hand too. The tick already waited for an open
         chain to land; a sleep by hand did not, so it could start a second
@@ -546,7 +612,7 @@ class Hippocampus:
                 pass
             if brief and brief.get("id") in (self.state.get("parked_briefs") or []):
                 brief = None                               # set aside: its hints matched nothing
-            if brief is None and ask_for_brief and self._cfg.sleep.brief_request:
+            if brief is None and ask_for_brief and self._cfg.sleep.brief_request and self._cfg.sleep.flow != "aging":
                 try:
                     req = self.request_brief(force=True)
                 except MemoryError:
@@ -604,6 +670,10 @@ class Hippocampus:
                     return report
                 if self._open_chain():
                     report["refused"] = "a draft chain is open; it lands before a retell pass starts"
+                    return report
+                if "retell" not in ((self._mem.health() or {}).get("features") or []):
+                    report["refused"] = ("the installed Memory predates the retell operation (no 'retell' in its "
+                                         "/health features); upgrade Memory first")
                     return report
                 rows = self._mem.long_entries(include_satellites=True)
                 cores = [r for r in rows if (r.get("metadata") or {}).get("kind", "core") == "core"
@@ -908,6 +978,15 @@ class Hippocampus:
                     report["status"] = "not_bedtime"
                     self.state["brief_misses"] = 0
                     report["misses"] = 0
+                elif self._cfg.sleep.flow == "aging":
+                    # No gate: the brief is optional here (see SleepConfig).
+                    self.state["brief_misses"] = 0
+                    report["misses"] = 0
+                    if self._open_chain():
+                        report["status"] = "chain_open"
+                    else:
+                        report["status"] = "sleeping_without_brief"
+                        report["sleep"] = self._sleep(brief=None)
                 else:
                     misses += 1
                     self.state["brief_misses"] = misses
@@ -1022,10 +1101,19 @@ class Hippocampus:
                           f"{round((start - last) / 3600)}h since the last one") + " - drafting, not aging out")
                 self._emit("catch_up", since=last)
 
-            # A sleep with nothing free to draft from costs no model call.
-            free_now = [x for x in self._mem.shorts(limit=self._cfg.sleep.max_entries_per_run)
-                        if x["id"] not in self._held_short_ids()]
-            report["quiet"] = not free_now
+            # A sleep with nothing free to draft from costs no model call. In the
+            # aging flow, free means at the end of its week and not held.
+            aging_flow = self._cfg.sleep.flow == "aging"
+            held_now = self._held_short_ids()
+            if aging_flow:
+                aging_now = [x for x in (self._mem.aging(self._aging_window()).get("entries") or [])
+                             if x["id"] not in held_now][: self._cfg.sleep.max_entries_per_run]
+                report["aging"] = len(aging_now)
+                report["quiet"] = not aging_now
+            else:
+                free_now = [x for x in self._mem.shorts(limit=self._cfg.sleep.max_entries_per_run)
+                            if x["id"] not in held_now]
+                report["quiet"] = not free_now
 
             # 2. the brief: the gate that opened this sleep (or none, by hand)
             if report["brief_requested"]:
@@ -1047,19 +1135,21 @@ class Hippocampus:
                 noise_hints = {str(h).lower() for h in (meta.get("noise_hints") or [])}
 
             # 3. the draft
-            shorts = self._mem.shorts(limit=self._cfg.sleep.max_entries_per_run)
-            held = self._held_short_ids()
-            free = [s for s in shorts if s["id"] not in held]
-            report["held_back"] = len(shorts) - len(free)
-            clusters = cluster_by_tags(free)
-            report["clusters"] = len(clusters)
-
             ops: list[dict[str, Any]] = []
             self._capture = []
             self._hint_hits = {}
             self._cut_offs = 0
-            for topic, entries in clusters:
-                ops += self._shifted(self._propose(topic, entries, promote_hints, noise_hints, brief), len(ops))
+            if aging_flow:
+                ops = self._draft_aging(aging_now, held_now, promote_hints, noise_hints, brief, report)
+            else:
+                shorts = self._mem.shorts(limit=self._cfg.sleep.max_entries_per_run)
+                held = self._held_short_ids()
+                free = [s for s in shorts if s["id"] not in held]
+                report["held_back"] = len(shorts) - len(free)
+                clusters = cluster_by_tags(free)
+                report["clusters"] = len(clusters)
+                for topic, entries in clusters:
+                    ops += self._shifted(self._propose(topic, entries, promote_hints, noise_hints, brief), len(ops))
             ops = self._submittable(ops)
             report["operations"] = len(ops)
             if self._cut_offs:
@@ -1074,7 +1164,10 @@ class Hippocampus:
                 report["hints"] = {
                     "promote": {h: self._hint_hits.get(("promote", h), []) for h in sorted(promote_hints)},
                     "noise": {h: self._hint_hits.get(("noise", h), []) for h in sorted(noise_hints)}}
-                if promote_hints and not report["quiet"] and not any(report["hints"]["promote"].values()):
+                # In the aging flow a hint is context, not a gate: one about this
+                # week's things matching nothing at the end of its week is normal.
+                if (promote_hints and not aging_flow and not report["quiet"]
+                        and not any(report["hints"]["promote"].values())):
                     report["brief_unmatched"] = True
                     self._log(f"brief {brief.get('id')}: none of its promote hints matched a memory "
                               f"({', '.join(sorted(promote_hints))})")
@@ -1142,7 +1235,8 @@ class Hippocampus:
             if report["draft_id"]:
                 report["tidy"] = {"deferred": "until the chain lands"}
             else:
-                report["tidy"] = self._mem.tidy(age_out=not catch_up, near=True, sweep=not catch_up, purge=False)
+                report["tidy"] = self._mem.tidy(age_out=self._silent_age_out(catch_up), near=True,
+                                                sweep=not catch_up, purge=False)
         except (MemoryError, Exception) as e:  # noqa: BLE001 - a sleep records its failure and ends
             report["error"] = f"{type(e).__name__}: {e}"
             self._log(f"sleep error: {report['error']}")
@@ -1203,7 +1297,7 @@ class Hippocampus:
         catch_up = bool(pending.pop(str(cluster_id), False))
         self.state["chain_catch_up"] = pending
         try:
-            tidy = self._mem.tidy(age_out=not catch_up, near=True, sweep=not catch_up, purge=False)
+            tidy = self._mem.tidy(age_out=self._silent_age_out(catch_up), near=True, sweep=not catch_up, purge=False)
         except Exception as e:  # noqa: BLE001 - the chain is closed; the next cycle's end tidies
             tidy = {"error": f"{type(e).__name__}: {e}"}
             self._log(f"could not tidy at the end of chain {cluster_id}: {e}")
@@ -1333,6 +1427,353 @@ class Hippocampus:
                              "promote_hints": parsed.get("promote_hints") or [],
                              "noise_hints": parsed.get("noise_hints") or []},
                 "_pulled": True}
+
+    # ── the aging flow (design note, 22 Oct 2026) ─────────────────────────
+    # Short-term is the quick access, this week's things, and it ranks above
+    # long-term in recall: a memory leaves it only at the end of its week,
+    # promoted on its way out or let go. So a sleep decides about those and
+    # nothing else, and every one of them gets a verdict the reviewer sees.
+    AGING_PILE_MAX = 6           # aging memories in one prompt: each is shown whole
+
+    def _silent_age_out(self, catch_up: bool) -> bool:
+        """Whether a tidy ages short-terms out on its own. Flow "all": what was
+        not promoted goes (never on a catch-up). The aging flow: never - a
+        memory leaves short-term by a verdict in a draft the reviewer saw, and
+        one with no verdict yet (its pile's model call failed, or its last
+        attempt was denied) is decided again at the next sleep."""
+        return self._cfg.sleep.flow == "all" and not catch_up
+
+    def _aging_window(self) -> float:
+        """How far ahead aging looks: to the next sleep, so nothing crosses the
+        line between two sleeps undecided."""
+        return float(24 * 3600 if (self._cfg.sleep.at or "").strip() else self._cfg.sleep.interval_seconds)
+
+    def _draft_aging(self, aging: list[dict[str, Any]], held: set[str], promote_hints: set[str],
+                     noise_hints: set[str], brief: Optional[dict[str, Any]],
+                     report: dict[str, Any]) -> list[dict[str, Any]]:
+        """Every aging memory, a verdict: piles by topic tag, the younger
+        memories on each pile's topic beside it as evidence and context."""
+        if not aging:
+            return []
+        self._refused = {}
+        aging_ids = {s["id"] for s in aging}
+        younger = [s for s in self._mem.shorts(limit=self._cfg.sleep.max_entries_per_run)
+                   if s["id"] not in aging_ids and s["id"] not in held]
+        piles = cluster_by_tags(aging, max_size=self.AGING_PILE_MAX)
+        report["clusters"] = len(piles)
+        ops: list[dict[str, Any]] = []
+        answered: list[dict[str, Any]] = []
+        for topic, pile in piles:
+            context = [] if topic == "_untagged" else self._related(pile, younger)
+            failures = len(self._model_failures)
+            ops += self._shifted(self._decide(topic, pile, context, promote_hints, noise_hints, brief), len(ops))
+            if len(self._model_failures) == failures:
+                answered += pile
+            # A pile whose model call failed gets no verdicts, and none are made
+            # up for it: its memories stay for the next sleep.
+        return ops + self._undecided(ops, answered)
+
+    @staticmethod
+    def _related(pile: list[dict[str, Any]], younger: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The younger short-terms on a pile's topic, newest first: tags shared
+        with the pile's first memory the way a pile is grouped."""
+        anchor = _tags((pile[0].get("metadata") or {}).get("topic"))
+        if not anchor:
+            return []
+        rel = [s for s in younger
+               if tag_overlap(_tags((s.get("metadata") or {}).get("topic")), anchor) >= CLUSTER_MIN_OVERLAP]
+        rel.sort(key=lambda s: float((s.get("metadata") or {}).get("ts") or 0), reverse=True)
+        return rel
+
+    def _undecided(self, ops: list[dict[str, Any]], answered: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """An aging memory the model left out of every operation gets an
+        explicit age_out, so it goes as a verdict the reviewer sees and can
+        turn down - never by being left out. A pin never ages out: one with no
+        verdict stays, and the next sleep asks again."""
+        named = {sid for op in ops for sid in op.get("source_short_ids") or []}
+        out: list[dict[str, Any]] = []
+        for s in answered:
+            if s["id"] in named:
+                continue
+            meta = s.get("metadata") or {}
+            if meta.get("pinned"):
+                self._log(f"pinned short-term {s['id'][:8]} reached the end of its week with no verdict; it stays")
+                continue
+            why = self._refused.get(s["id"]) or "no verdict from the drafting model"
+            out.append({"kind": "age_out", "content": "", "topic": meta.get("topic"),
+                        "source_short_ids": [s["id"]], "evidence_count": 1,
+                        "rationale": f"{why}; at the end of its week it is let go unless you keep it"})
+        return out
+
+    def _decide(self, topic: str, pile: list[dict[str, Any]], context: list[dict[str, Any]],
+                promote_hints: set[str], noise_hints: set[str],
+                brief: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+        """The verdicts for one pile of aging memories."""
+        ops: list[dict[str, Any]] = []
+        real_topic = None if topic == "_untagged" else topic
+        # verbatim: the main model marked the wording as the point - no model needed
+        for e in [e for e in pile if (e.get("metadata") or {}).get("verbatim")]:
+            ops.append({"kind": "verbatim", "content": e.get("content") or "", "topic": real_topic,
+                        "source_short_ids": [e["id"]], "evidence_count": 1,
+                        "rationale": "preserved verbatim at the person's request"})
+        remaining = [e for e in pile if not (e.get("metadata") or {}).get("verbatim")]
+        if not remaining:
+            return ops
+        pinned = [e for e in remaining if (e.get("metadata") or {}).get("pinned")]
+        # The evidence is counted across ALL of short-term: the aging ones and
+        # the younger ones on the topic. Only a pin gets past the bar without it.
+        evidence = len(pile) + len(context)
+        allowed_new = bool(pinned) or evidence >= self._cfg.sleep.promote_min_evidence
+        everything = remaining + context
+        haystack = (topic.lower() + " || " + " ".join((e.get("content") or "").lower() for e in everything))
+        tags = _tags(topic).union(*[_tags((e.get("metadata") or {}).get("topic")) for e in everything])
+        hay_words = _words(haystack)
+        kept = sorted(h for h in promote_hints if hint_match(h, tags, haystack, hay_words))
+        noise = sorted(h for h in noise_hints if hint_match(h, tags, haystack, hay_words, loose=False))
+        hits = getattr(self, "_hint_hits", None)
+        if hits is not None:
+            for h in kept:
+                hits.setdefault(("promote", h), []).append(topic)
+            for h in noise:
+                hits.setdefault(("noise", h), []).append(topic)
+
+        if not self.model_configured:
+            if allowed_new:
+                longest = max(remaining, key=lambda e: len(e.get("content") or ""))
+                ops.append({"kind": "new_core", "content": longest.get("content") or "", "topic": real_topic,
+                            "source_short_ids": [e["id"] for e in remaining], "evidence_count": len(remaining),
+                            "rationale": f"mechanical: {evidence} short-term(s) on '{topic}', longest kept; "
+                                         "no model to place it on a core"})
+            else:
+                for e in remaining:
+                    if not (e.get("metadata") or {}).get("pinned"):
+                        ops.append({"kind": "age_out", "content": "", "topic": real_topic,
+                                    "source_short_ids": [e["id"]], "evidence_count": 1,
+                                    "rationale": f"mechanical: {evidence} short-term(s) on '{topic}', under the "
+                                                 f"bar of {self._cfg.sleep.promote_min_evidence}"})
+            return ops
+
+        candidates = self._candidates(remaining)
+        ops += self._shifted(self._decide_pile(real_topic, remaining, context, candidates, evidence, allowed_new,
+                                               steer=self._steer(brief, kept, noise, gate=False)), len(ops))
+        return ops
+
+    def _aging_prompt(self, topic: Optional[str], entries: list[dict[str, Any]], context: list[dict[str, Any]],
+                      candidates: list[dict[str, Any]], evidence: int, allowed_new: bool, steer: str) -> str:
+        bar = self._cfg.sleep.promote_min_evidence
+        aging_lines = "\n".join(
+            f"[{i}] ({when(e)})" + (" PINNED: keep it, never age_out." if (e.get("metadata") or {}).get("pinned") else "")
+            + f" {(e.get('content') or '').strip()}" for i, e in enumerate(entries))
+        n = max(0, int(self._cfg.sleep.context_shorts))
+        cut = max(80, int(self._cfg.sleep.context_chars))
+        ctx_lines = "\n".join(f"- ({when(s)}) {clip(s.get('content'), cut)}" for s in context[:n]) or "(none)"
+        if len(context) > n:
+            ctx_lines += f"\n- ...and {len(context) - n} more"
+        bar_line = (f"{evidence} memories in short-term are about this topic ({len(entries)} at the end of their "
+                    f"week, {len(context)} newer). " +
+                    ("That clears the bar: a new_core is allowed." if allowed_new else
+                     f"That is under the bar of {bar}: no new_core. Support, refine or replace one of the cores "
+                     "below, or age_out."))
+        steer_block = f"\n\nSteer:\n{steer}" if steer else ""
+        return (
+            f"{self.voice.block()}"
+            "You are a memory consolidator's drafting worker. Short-term memory keeps about a week. The memories "
+            "'At the end of their week' leave short-term tonight. Decide where EACH of them goes:\n"
+            "- support: it is more evidence for one of the existing cores. The memory itself is kept under that "
+            "core, in its own words. Give target_core_id; no content.\n"
+            "- refine: it supports a core AND changes a small detail of it - a date, a name, a number, a colour - "
+            "while the core's point still stands. Give target_core_id and restated_content: the WHOLE core said "
+            "again with the detail changed.\n"
+            "- replace: it shows a core was WRONG - the point itself, not a detail. Give target_core_id, content: "
+            "the new core, and contradicts: the sentence of that core it proves wrong, copied exactly from the "
+            "core. If you cannot copy one, it is support or refine, not replace.\n"
+            "- new_core: no core covers it and it is worth keeping. content: the retelling - what the person "
+            "would say to 'remember that?', a paragraph at most, with its point. A core is not only a lesson: a "
+            "running joke, something fun, a game's rules, a picture are cores too. The memories are kept under "
+            "it.\n"
+            "- age_out: a one-off with nowhere to go. It is let go.\n"
+            f"{bar_line}\n"
+            "The newer memories are context: they stay in short-term, so never put them in \"aging\". Use them "
+            "to word a new core or a replace so it says the thing as it stands now.\n"
+            "Return ONLY JSON:\n"
+            '{"operations": [{"kind": "support|refine|replace|new_core|age_out", "aging": [0], '
+            '"target_core_id": "...", "content": "...", "restated_content": "...", "contradicts": "...", '
+            '"rationale": "..."}]}\n'
+            "\"aging\" lists the numbers of the memories the operation decides. Every memory at the end of its "
+            "week is in exactly one operation, and memories about the same thing are ONE operation. Use core ids "
+            "exactly as given and never invent one. To support a new_core you propose in this same answer, give "
+            "\"target_op\": <its position in your list, from 0> instead of target_core_id. Say only what the "
+            "memories say, nothing from the cores or the card they do not. Keep each rationale to one short "
+            "sentence."
+            f"{steer_block}\n\n"
+            f"Topic: {topic or 'untagged'}\n\n"
+            f"At the end of their week (decide each):\n{aging_lines}\n\n"
+            f"Newer memories on this topic (context, they stay):\n{ctx_lines}\n\n"
+            f"Existing cores:\n{self._core_lines(candidates)}\n\nJSON:")
+
+    def _decide_pile(self, topic: Optional[str], entries: list[dict[str, Any]], context: list[dict[str, Any]],
+                     candidates: list[dict[str, Any]], evidence: int, allowed_new: bool,
+                     steer: str = "") -> list[dict[str, Any]]:
+        prompt = self._aging_prompt(topic, entries, context, candidates, evidence, allowed_new, steer)
+
+        def saved(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            # what a replay needs to judge the answer the way the sleep did
+            return [{"id": r["id"], "content": r.get("content") or "",
+                     "metadata": {k: (r.get("metadata") or {}).get(k) for k in ("ts", "topic", "pinned")}}
+                    for r in rows]
+        call: dict[str, Any] = {"stage": "decide", "topic": topic, "prompt": prompt, "entries": saved(entries),
+                                "context": saved(context), "candidates": candidates, "evidence": evidence,
+                                "allowed_new": allowed_new}
+        if self._capture is not None:
+            self._capture.append(call)
+        t0 = time.time()
+        try:
+            raw = self._call_model(prompt)
+        except ModelUnavailable:
+            raise                                          # the sleep fails and keeps its brief
+        except Exception as e:  # noqa: BLE001
+            call.update(error=str(e), seconds=round(time.time() - t0, 2), ops=[])
+            self._model_failure("draft", topic, str(e))
+            return []
+        call.update(answer=raw, seconds=round(time.time() - t0, 2))
+        ops = self._parse_aging(raw, topic, entries, context, candidates, allowed_new)
+        call["ops"] = ops or []
+        if self._cut_off:
+            call["cut_off"] = True
+            self._cut_offs += 1
+        if ops is None:
+            call["error"] = "cut off at max_tokens" if self._cut_off else "not the JSON asked for"
+            self._model_failure("draft", topic, (
+                f"the answer was cut off before one operation was complete: model.max_tokens "
+                f"({self._cfg.model.max_tokens}) is too low for this model" if self._cut_off else
+                "the model's answer was not the JSON asked for: " + repr((raw or "")[:160])))
+            return []
+        return ops
+
+    def _parse_aging(self, raw: str, topic: Optional[str], entries: list[dict[str, Any]],
+                     context: list[dict[str, Any]], candidates: list[dict[str, Any]],
+                     allowed_new: bool) -> Optional[list[dict[str, Any]]]:
+        """An aging answer, parsed and validated: None when it is not the JSON
+        asked for. The sleep and a replay both come through here."""
+        self._cut_off = False
+        parsed = self._json_from(raw)
+        if not isinstance(parsed, dict):
+            got, self._cut_off = salvage_operations(raw)
+            if not got:
+                return None
+            return self._validate_aging_ops(got, topic, entries, context, candidates, allowed_new)
+        return self._validate_aging_ops(parsed.get("operations"), topic, entries, context, candidates, allowed_new)
+
+    def _validate_aging_ops(self, raw_ops: Any, topic: Optional[str], entries: list[dict[str, Any]],
+                            context: list[dict[str, Any]], candidates: list[dict[str, Any]],
+                            allowed_new: bool) -> list[dict[str, Any]]:
+        """The verdicts the store will accept, as Memory's operations. Each
+        aging memory is decided once (the first operation to name it); an
+        operation that decides nothing goes; a target must be a core it was
+        shown. A replace that cannot quote what the core got wrong is support;
+        a refine with no usable rewording is support; a new core under the bar
+        goes (its memories then age out, as a verdict); a pin never ages out.
+        What was left undecided is _undecided's."""
+        cores = {c["id"]: c for c in candidates}
+        pinned = {i for i, e in enumerate(entries) if (e.get("metadata") or {}).get("pinned")}
+        source = entries + context
+        claimed: set[int] = set()
+        kept: list[tuple[int, dict[str, Any], Optional[int]]] = []
+        for pos, raw in enumerate(raw_ops or []):
+            if not isinstance(raw, dict):
+                continue
+            asked = str(raw.get("kind", "")).strip().lower()
+            kind = AGING_KINDS.get(asked)
+            if kind is None:
+                continue
+            restated = str(raw.get("restated_content") or "").strip()
+            if asked == "attach" and restated:
+                kind = "refine"
+            idxs: list[int] = []
+            picked = raw.get("aging") if raw.get("aging") is not None else raw.get("source_indexes")
+            for i in picked if isinstance(picked, list) else []:
+                try:
+                    i = int(i)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= i < len(entries) and i not in claimed and i not in idxs:
+                    idxs.append(i)
+            if not idxs and len(entries) == 1 and 0 not in claimed:
+                idxs = [0]
+            if kind == "age_out":
+                idxs = [i for i in idxs if i not in pinned]       # a pin never ages out
+            if not idxs:
+                continue
+            content, cut = strip_scaffolding(str(raw.get("content") or ""))
+            if cut:
+                self._log(f"{topic or 'untagged'}: cut prompt scaffolding out of a {kind}'s text")
+            quote = str(raw.get("contradicts") or "").strip()
+            rationale = str(raw.get("rationale") or "")[:500] or None
+            target, target_op = raw.get("target_core_id"), None
+            if kind in ("support", "refine", "replace"):
+                if target not in cores:
+                    target = None
+                    if kind != "replace":                         # a replace is of a core that exists
+                        try:
+                            target_op = int(raw.get("target_op"))
+                        except (TypeError, ValueError):
+                            target_op = None
+                    if target_op is None:
+                        self._log(f"{topic or 'untagged'}: dropped a {kind} aimed at a core it was not shown")
+                        continue
+            else:
+                target = None
+            if kind == "refine":
+                core_text = (cores.get(target) or {}).get("content") or ""
+                if (not restated or restated == content
+                        or (target and not grounded(restated, source + [{"content": core_text}]))):
+                    self._log(f"{topic or 'untagged'}: a refine with no usable rewording of the core; kept as support")
+                    kind = "support"
+            if kind == "replace":
+                if not content or not quoted(quote, (cores.get(target) or {}).get("content") or ""):
+                    self._log(f"{topic or 'untagged'}: a replace that quotes nothing core {str(target)[:8]} says; "
+                              "kept as support (refine-vs-replace)")
+                    kind = "support"
+                elif not grounded(content, source):
+                    self._log(f"{topic or 'untagged'}: a replace whose text is not in the memories; kept as support")
+                    kind = "support"
+            if kind == "new_core":
+                if not allowed_new:
+                    self._log(f"{topic or 'untagged'}: a new core under the evidence bar, dropped; "
+                              "its memories age out unless the reviewer keeps them")
+                    for i in idxs:
+                        self._refused[entries[i]["id"]] = (
+                            "the model proposed a new core for it, but its topic is under the evidence bar")
+                    continue
+                if not content or not grounded(content, source):
+                    self._log(f"{topic or 'untagged'}: dropped a new core whose text is not in the memories: "
+                              f"{content[:90]!r}")
+                    continue
+            ids = [entries[i]["id"] for i in sorted(idxs)]
+            op: dict[str, Any] = {"topic": topic, "source_short_ids": ids, "evidence_count": len(ids),
+                                  "rationale": rationale}
+            if kind == "support":
+                op.update(kind="attach", content="", target_core_id=target)
+            elif kind == "refine":
+                op.update(kind="attach", content="", target_core_id=target, restated_content=restated)
+            elif kind == "replace":
+                op.update(kind="supersede", content=content, target_core_id=target, contradicts=quote)
+            elif kind == "new_core":
+                op.update(kind="new_core", content=content, target_core_id=None)
+            else:
+                op.update(kind="age_out", content="", target_core_id=None)
+            claimed.update(idxs)
+            kept.append((pos, op, target_op))
+        # support for a new core in this same answer: only one that survived
+        cores_at = {pos for pos, op, _ in kept if op["kind"] == "new_core"}
+        kept = [(pos, op, t) for pos, op, t in kept if t is None or (t in cores_at and t != pos)]
+        final = {pos: i for i, (pos, _, _) in enumerate(kept)}
+        out: list[dict[str, Any]] = []
+        for _, op, t in kept:
+            if t is not None:
+                op["target_op"] = final[t]
+            out.append(op)
+        return out
 
     # ── proposing operations for one cluster ──────────────────────────────
     def _propose(self, topic: str, entries: list[dict[str, Any]],
@@ -1474,13 +1915,15 @@ class Hippocampus:
         return "\n".join(lines) or "(none)"
 
     @staticmethod
-    def _steer(brief: Optional[dict[str, Any]], kept: list[str], noise: list[str]) -> str:
+    def _steer(brief: Optional[dict[str, Any]], kept: list[str], noise: list[str], gate: bool = True) -> str:
         """What the main model said mattered, put in front of the drafting
-        worker. The hints already move the promotion threshold; this is the
-        other half of the brief's job - the summary and the matched hints go
-        INTO the prompt, so the worker knows a running bit from a one-off
-        instead of guessing importance from the fragments alone. It is what
-        turns a one-off joke into an inside joke: the brief names the bit."""
+        worker. In flow "all" the hints also move the promotion threshold;
+        this is the other half of the brief's job - the summary and the
+        matched hints go INTO the prompt, so the worker knows a running bit
+        from a one-off instead of guessing importance from the fragments
+        alone. In the aging flow (gate=False) this is ALL the brief does: it
+        is context, and it promotes nothing on its own - the main model is
+        not the one making the call (brief-gives-context-not-promotion)."""
         if not brief and not kept and not noise:
             return ""
         lines = []
@@ -1489,17 +1932,26 @@ class Hippocampus:
             who = ("pulled from the fragments by a small model" if (brief or {}).get("_pulled")
                    else "written by the main model, who was there")
             lines.append(f"The brief for this period ({who}):\n{text[:900]}")
-        if kept:
+        if kept and gate:
             lines.append("The brief names THIS topic as worth keeping (" + "; ".join(kept[:6]) +
                          "): a running bit or a real lesson deserves a core or an attach even from few fragments.")
-        if noise:
+        elif kept:
+            lines.append("The brief names this topic as one that matters (" + "; ".join(kept[:6]) +
+                         "): weigh it - a running bit or a real lesson is worth keeping - but a new core still "
+                         "needs the evidence counted above.")
+        if noise and gate:
             lines.append("The brief names THIS topic as noise (" + "; ".join(noise[:6]) +
                          "): a one-off; propose nothing unless the fragments plainly outgrow that call.")
+        elif noise:
+            lines.append("The brief calls this topic a one-off (" + "; ".join(noise[:6]) +
+                         "): weigh that when you decide where each memory goes.")
         return "\n\n".join(lines)
+
+    FRAGMENT_CHARS = 1200        # flow "all": a fragment past this is cut, and says so (see clip)
 
     def _draft_cluster(self, topic: Optional[str], entries: list[dict[str, Any]],
                        candidates: list[dict[str, Any]], steer: str = "") -> list[dict[str, Any]]:
-        frag_lines = "\n".join(f"[{i}] {(e.get('content') or '')[:400]}" for i, e in enumerate(entries))
+        frag_lines = "\n".join(f"[{i}] {clip(e.get('content'), self.FRAGMENT_CHARS)}" for i, e in enumerate(entries))
         core_lines = self._core_lines(candidates)
         steer_block = f"\n\nSteer:\n{steer}" if steer else ""
         prompt = (
@@ -1767,7 +2219,8 @@ class Hippocampus:
                 failures = len(self._model_failures)
                 self._withdrawn = 0
                 new_ops = self._redraft(self._resolve_target_ops(denied, d), made=self._chain_cores(chain),
-                                        draft_ops=d.get("operations") or [])
+                                        draft_ops=d.get("operations") or [],
+                                        aging=(d.get("extra") or {}).get("sleep_flow") == "aging")
                 if self._withdrawn:
                     report.setdefault("withdrawn", {})[cluster_id] = self._withdrawn
                 if not new_ops:
@@ -1866,6 +2319,19 @@ class Hippocampus:
         "should be kept. The rationale is one short sentence about what you changed; it is not the memory, "
         "and a memory written only there is lost.\n\n")
 
+    # The aging flow's memories are at the end of their week: what the redraft
+    # decides is where each one goes as it leaves short-term (22 Oct 2026).
+    REDRAFT_AGING = (
+        "These memories are at the end of their week: once this lands they leave short-term. The kinds here:\n"
+        "- attach: the memory itself is kept under the core, in its own words, so here an attach needs no "
+        "\"content\" (the one exception to the rule above).\n"
+        "- supersede: the core was WRONG. \"content\" is the new core, and \"contradicts\" is the sentence of "
+        "that core it proves wrong, copied exactly from the core.\n"
+        "- new_core: \"content\" is the retelling.\n"
+        "- age_out: let it go - no content, no target. To withdraw is to age it out.\n"
+        'So also: {"kind": "age_out", "rationale": "..."} and '
+        '{"kind": "supersede", "target_core_id": "...", "content": "...", "contradicts": "...", "rationale": "..."}\n\n')
+
     @staticmethod
     def _ops_mentioned(critique: Optional[str]) -> list[int]:
         """Operations of the same draft the critique speaks of by number."""
@@ -1878,7 +2344,8 @@ class Hippocampus:
 
     def _redraft(self, denied: list[dict[str, Any]],
                  made: Optional[list[dict[str, Any]]] = None,
-                 draft_ops: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
+                 draft_ops: Optional[list[dict[str, Any]]] = None,
+                 aging: bool = False) -> list[dict[str, Any]]:
         if not self.model_configured:
             self._log("denied operations need a model to redraft; none configured")
             return []
@@ -1913,7 +2380,10 @@ class Hippocampus:
             # the previous content are what a redraft works from; the fragments
             # were context. Redraft without them; the op keeps its source ids.
             if src:
-                frag_lines = "\n".join(f"- [{s['id'][:8]}] {(s.get('content') or '')[:400]}" for s in src)
+                # whole: a redraft told to 'carry the fragment in full' was shown it
+                # cut at 400 characters, with no marker, until 22 Oct 2026
+                frag_lines = "\n".join(f"- [{s['id'][:8]}] ({when(s)}) {(s.get('content') or '').strip()}"
+                                       for s in src)
             else:
                 frag_lines = ("- (none left: an approved operation in this draft already promoted them; "
                               "work from the previous content and the critique)")
@@ -1930,7 +2400,10 @@ class Hippocampus:
                     candidates.insert(0, dict(c))
             target = op.get("target_core_id")
             if target and target not in {c["id"] for c in candidates}:
-                candidates.append({"id": target, "content": "(the core the denied operation targets)", "topic": None})
+                # its real words where they can be had: a replace is checked against them
+                core = self._mem.core(target) if aging else None
+                candidates.append({"id": target, "topic": None,
+                                   "content": (core or {}).get("content") or "(the core the denied operation targets)"})
             # A CORE THE CRITIQUE NAMES IS A CORE TO SHOW. The reviewer wrote
             # 'attach to core 4e90f3c3...' and the redraft did - and was refused
             # for naming a core it had not been shown (six times on 2 Oct 2026).
@@ -1964,7 +2437,7 @@ class Hippocampus:
             target_line = target or ("(none - it pointed at a new core in its draft that was not approved)"
                                      if op.get("_target_op_denied") else "(none)")
             prompt = (
-                f"{self.voice.block()}{self.REDRAFT_RULES}"
+                f"{self.voice.block()}{self.REDRAFT_RULES}{self.REDRAFT_AGING if aging else ''}"
                 f"THE CRITIQUE:\n{op.get('critique')}\n\n"
                 f"What you proposed (operation {op.get('index')}):\n"
                 f"kind: {op.get('kind')}\ntarget core: {target_line}\ntopic: {op.get('topic') or 'untagged'}\n"
@@ -1974,15 +2447,18 @@ class Hippocampus:
                 f"The critique, once more: {op.get('critique')}\n\nJSON:")
             denied_op = {k: op.get(k) for k in ("index", "kind", "topic", "target_core_id", "content", "critique")}
             call: dict[str, Any] = {"stage": "redraft", "topic": op.get("topic"), "prompt": prompt,
-                                    "entries": [{"id": s["id"], "content": s.get("content") or ""} for s in src],
+                                    "entries": [{"id": s["id"], "content": s.get("content") or "",
+                                                 "metadata": {"pinned": (s.get("metadata") or {}).get("pinned")}}
+                                                for s in src],
                                     "candidates": candidates, "denied": denied_op,
-                                    "op_cores": {str(k): v for k, v in op_cores.items()}, "pending": sorted(pending)}
+                                    "op_cores": {str(k): v for k, v in op_cores.items()}, "pending": sorted(pending),
+                                    "aging": aging}
             if self._capture is not None:
                 self._capture.append(call)
             t0 = time.time()
             try:
                 raw = self._call_model(prompt)
-                if self._lacks_content(raw):
+                if self._lacks_content(raw, aging):
                     # The memory written into the rationale and "content" left out:
                     # seven of thirty redrafts on 2 Oct 2026, every one of them
                     # obeying its critique. Ask once more, saying exactly that.
@@ -1997,7 +2473,7 @@ class Hippocampus:
                 self._model_failure("redraft", op.get("topic"), str(e))
                 continue
             call.update(answer=raw, seconds=round(time.time() - t0, 2))
-            new = self._parse_redraft(raw, denied_op, call["entries"], candidates, op_cores, pending)
+            new = self._parse_redraft(raw, denied_op, call["entries"], candidates, op_cores, pending, aging=aging)
             if new is not None and new.get("withdrawn"):
                 call.update(ops=[], withdrawn=True)
                 self._withdrawn += 1
@@ -2025,6 +2501,11 @@ class Hippocampus:
                 self._log(f"operation {op.get('index')}: the redraft had no usable operation, dropped: "
                           + repr((raw or "")[:160]))
                 continue
+            if new and not src and new.get("kind") == "age_out":
+                # nothing left to let go: a sibling already took these memories along
+                self._withdrawn += 1
+                call["ops"] = []
+                continue
             if new and not src:
                 # the fragments are gone (promoted by a sibling): the op keeps its ids as evidence
                 new["source_short_ids"] = list(op.get("source_short_ids") or [])
@@ -2041,19 +2522,36 @@ class Hippocampus:
         and the reviewer can place it - rather than being lost."""
         where = {o["redraft_of"]: i for i, o in enumerate(out)
                  if o.get("redraft_of") is not None and o["kind"] == "new_core"}
-        for o in out:
+        dropped: list[int] = []
+        for i, o in enumerate(out):
             n = o.pop("_wants_op", None)
             if n is None:
                 continue
             if n in where and out[where[n]] is not o:
                 o["target_op"] = where[n]
+            elif not (o.get("content") or "").strip():
+                # the aging flow's attach keeps the memory itself and has no text to
+                # stand as a core: it stays in short-term and the next sleep decides it
+                self._log(f"operation {o.get('redraft_of')}: op {n} did not come back as a new core; "
+                          "left for the next sleep")
+                dropped.append(i)
             else:
                 self._log(f"operation {o.get('redraft_of')}: op {n} did not come back as a new core; kept as a new core")
                 o["kind"], o["target_core_id"] = "new_core", None
+        if dropped:
+            keep = [i for i in range(len(out)) if i not in dropped]
+            moved = {old: new for new, old in enumerate(keep)}
+            out = [out[i] for i in keep]
+            for o in out:
+                if o.get("target_op") is not None:
+                    o["target_op"] = moved[o["target_op"]]
         return out
 
-    def _lacks_content(self, raw: str) -> bool:
+    def _lacks_content(self, raw: str, aging: bool = False) -> bool:
         parsed = self._json_from(raw)
+        if aging and isinstance(parsed, dict) and str(parsed.get("kind") or "").strip().lower() in (
+                "attach", "support", "age_out", "ageout", "let_go"):
+            return False                                   # the memory itself is what an attach keeps
         return (isinstance(parsed, dict) and parsed.get("withdraw") is not True
                 and not str(parsed.get("content") or parsed.get("restated_content") or "").strip())
 
@@ -2093,7 +2591,8 @@ class Hippocampus:
     def _parse_redraft(self, raw: str, op: dict[str, Any], src: list[dict[str, Any]],
                        candidates: Optional[list[dict[str, Any]]] = None,
                        op_cores: Optional[dict[int, str]] = None,
-                       pending: Optional[set[int]] = None) -> Optional[dict[str, Any]]:
+                       pending: Optional[set[int]] = None,
+                       aging: bool = False) -> Optional[dict[str, Any]]:
         """A redraft answer turned into the operation that replaces the
         denied one; {"withdrawn": True, ...} when the worker drops it; None
         when there is nothing usable. Shared with a replay.
@@ -2103,20 +2602,43 @@ class Hippocampus:
         a core the worker was shown - the candidates, which include the old
         target and any core the critique named - or to another operation of
         the draft (see _target_of), and is None for new_core. A packet from
-        before retargeting has no candidates: the old kind and target hold."""
+        before retargeting has no candidates: the old kind and target hold.
+
+        aging: these memories are at the end of their week, so they go
+        somewhere as this lands. A withdrawal is an age_out (a pin never ages
+        out), an attach keeps the memory itself and needs no text, and a
+        supersede that cannot quote what the core got wrong is an attach -
+        unless the critique asked for the replace."""
         parsed = self._json_from(raw)
         if not isinstance(parsed, dict):
             return None
         rationale = str(parsed.get("rationale") or "")[:500] or None
+
+        def let_go() -> dict[str, Any]:
+            ids = [s["id"] for s in src if not (s.get("metadata") or {}).get("pinned")]
+            if not ids:
+                return {"withdrawn": True, "rationale": rationale}
+            out = {"kind": "age_out", "content": "", "topic": op.get("topic"), "target_core_id": None,
+                   "source_short_ids": ids, "evidence_count": len(ids), "rationale": rationale}
+            if op.get("index") is not None:
+                out["redraft_of"] = op["index"]
+            return out
         if parsed.get("withdraw") is True:
-            return {"withdrawn": True, "rationale": rationale}
+            return let_go() if aging else {"withdrawn": True, "rationale": rationale}
         kind = op.get("kind")
         target = op.get("target_core_id")
         wants: Optional[int] = None
         if candidates is not None and kind != "verbatim":
             asked = str(parsed.get("kind") or kind or "").strip().lower()
+            if aging:
+                norm = AGING_KINDS.get(asked, asked)
+                asked = {"support": "attach", "refine": "attach", "replace": "supersede"}.get(norm, norm)
+                if asked == "age_out":
+                    return let_go()
             if asked in ("new_core", "attach", "supersede"):
                 kind = asked
+            if kind == "age_out":
+                return let_go()                                # silent on the kind: it still lets go
             if kind == "new_core":
                 target = None
             elif parsed.get("target_core_id") in (None, "") and parsed.get("target_op") is None:
@@ -2138,7 +2660,17 @@ class Hippocampus:
             # An attach too: the episode put in the wrong field, with content
             # empty (1 Oct 2026) - it is the satellite's text.
             content = str(parsed.get("restated_content") or "").strip()
-        if not content:
+        quote = str(parsed.get("contradicts") or "").strip()
+        if aging and kind == "supersede":
+            core_text = next((c.get("content") or "" for c in candidates or [] if c["id"] == target), "")
+            asked_for = re.search(r"\b(supersede|replace)", op.get("critique") or "", flags=re.I)
+            if not (content and (quoted(quote, core_text) or asked_for)):
+                self._log(f"operation {op.get('index')}: a supersede that quotes nothing the core says; "
+                          "redrafted as an attach")
+                kind = "attach"
+        if aging and kind == "attach":
+            content = ""                                   # the memory itself is the satellite
+        elif not content:
             return None
         # A REDRAFT NEVER REWORDS A CORE. restated_content replaces the target
         # core's wording when the attach is approved, and a redraft cannot be
@@ -2148,8 +2680,10 @@ class Hippocampus:
         # keeps its words.
         # A redraft used to cite every fragment the denied operation cited. It
         # carries only what its text covers (covered_fragments); the rest stays.
+        # In the aging flow every source is kept whole under the core it lands on,
+        # so nothing is lost by citing it and every one is carried.
         keep, left = list(range(len(src))), []
-        if src and kind != "verbatim":
+        if src and kind != "verbatim" and not aging:
             keep, left = covered_fragments(content, keep, src)
             if left:
                 self._log(f"operation {op.get('index')}: the redraft carries less than half of "
@@ -2157,6 +2691,8 @@ class Hippocampus:
         new = {"kind": kind, "content": content, "topic": op.get("topic"), "target_core_id": target,
                "source_short_ids": [src[i]["id"] for i in keep], "evidence_count": max(1, len(keep)),
                "rationale": rationale}
+        if aging and kind == "supersede" and quote:
+            new["contradicts"] = quote
         if left:
             new["left_short_ids"] = [src[i]["id"] for i in left]  # shown to the reviewer, as at draft time
         if wants is not None:
@@ -2214,11 +2750,19 @@ class Hippocampus:
                 out["answer"] = raw
                 if c.get("stage") == "redraft":
                     new = self._parse_redraft(raw, c.get("denied") or {}, c.get("entries") or [],
-                                              c.get("candidates"))
+                                              c.get("candidates"), aging=bool(c.get("aging")))
                     if new is not None and new.get("withdrawn"):
                         out.update(ops=[], withdrawn=True)
                     else:
                         out["ops"] = [new] if new else []
+                elif c.get("stage") == "decide":
+                    # the aging flow: judged against the same pile, context and bar
+                    out["context"] = c.get("context")
+                    ops = self._parse_aging(raw, c.get("topic"), c.get("entries") or [], c.get("context") or [],
+                                            c.get("candidates") or [], bool(c.get("allowed_new")))
+                    out["ops"] = ops or []
+                    if ops is None:
+                        out["error"] = "not the JSON asked for"
                 else:
                     ops = self._parse_draft(raw, c.get("topic"), c.get("entries") or [], c.get("candidates") or [])
                     out["ops"] = ops or []

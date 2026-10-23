@@ -87,8 +87,11 @@ sleep:
   tend_interval_seconds: 600
   nudge_wait_seconds: 180  # a nudged turn waits this long for the session that sent it to end
   max_entries_per_run: 500
-  promote_min_evidence: 3  # short-terms a topic needs before it is proposed (hints, pins, verbatim override)
-  hint_min_evidence: 1     # a matched promote hint lowers a topic's bar to this (one instance runs 2; pins and verbatim still promote one)
+  flow: aging              # aging: decide only what ages out before the next sleep; all: the earlier draft-everything flow
+  context_shorts: 6        # aging: younger short-terms on the topic shown beside a pile, newest first
+  context_chars: 300       # ...and how much of each (the aging ones are always shown whole)
+  promote_min_evidence: 3  # short-terms a topic needs (aging + younger) before a new core is made from it; pins and verbatim override
+  hint_min_evidence: 1     # flow all only: a matched promote hint lowers a topic's bar to this
   max_attempts: 3          # drafts per chain before the last one is submitted terminal
   candidate_cores: 5       # existing cores shown to the model per cluster
   state_path: ~/.seren-hippocampus/state.json

@@ -83,6 +83,7 @@ def list_packets(state_path: Path, limit: int = 50) -> list[dict[str, Any]]:
 # ── the checks ────────────────────────────────────────────────────────────────
 def _source_text(call: dict[str, Any]) -> str:
     parts = [e.get("content") or "" for e in call.get("entries") or []]
+    parts += [e.get("content") or "" for e in call.get("context") or []]      # the aging flow's younger memories
     parts += [c.get("content") or "" for c in call.get("candidates") or []]
     return " ".join(parts)
 

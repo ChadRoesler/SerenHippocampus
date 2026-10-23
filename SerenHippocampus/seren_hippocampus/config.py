@@ -168,16 +168,33 @@ class SleepConfig(BaseModel):
     # for a moment; the next wake-up must not land on top of it.
     nudge_wait_seconds: int = 180
     max_entries_per_run: int = 500
-    # A topic cluster needs this many short-terms to be proposed at all,
-    # unless a brief hint, a pin or a verbatim flag says otherwise.
+    # WHAT A SLEEP TOUCHES (design note, 22 Oct 2026). "aging": only the
+    # short-terms that reach the end of their lifetime (Memory's
+    # lifetimes.short_term_seconds) before the next sleep. Each gets a
+    # verdict - support a core, refine one, replace one, a new core, or age
+    # out - and the rest of short-term stays whole for its week: it is the
+    # quick access, and it ranks above long-term in recall. The younger
+    # memories on the same topic are shown as evidence and context, never
+    # moved. Nothing leaves short-term without a verdict the reviewer saw.
+    # "all": the earlier flow - every free short-term is drafted every sleep
+    # and whatever was not promoted ages out silently in Memory's tidy.
+    flow: str = "aging"
+    # aging: how many younger short-terms on a pile's topic the model sees
+    # beside it, newest first, and how much of each (cut visibly, with a
+    # marker: the aging ones themselves are always shown whole).
+    context_shorts: int = 6
+    context_chars: int = 300
+    # A topic needs this many short-terms before a new core is made from it -
+    # in the aging flow counted across ALL of short-term, the aging ones and
+    # the younger ones together. Below it an aging memory can still support,
+    # refine or replace a core that exists, or it ages out. Pins and verbatim
+    # marks are the only way past the bar.
     promote_min_evidence: int = 3
-    # A matched promote hint lowers a cluster's bar to this (never below 1,
-    # never above promote_min_evidence). 1 is the documented default: the
-    # brief turns a one-off into an inside joke. One instance runs 2
-    # (21 Oct 2026): on that store 80 of 132 drafted cores carried one
-    # episode's evidence, because the brief waved singletons through, so a
-    # hinted topic still needs two short-terms there; a pin or a verbatim
-    # flag still promotes one.
+    # flow "all" only: a matched promote hint lowers a cluster's bar to this.
+    # In the aging flow the brief is context and lowers nothing (brief-gives-
+    # context-not-promotion, 22 Oct 2026): on one store 80 of 132 drafted
+    # cores carried one episode's evidence, because the brief waved
+    # singletons through.
     hint_min_evidence: int = 1
     # The draft cap: attempts per chain, the last submitted terminal (the
     # reviewer may then edit on approve, and a denial ends the chain - no
@@ -209,6 +226,11 @@ class SleepConfig(BaseModel):
     # brief_check_misses of them the hippocampus asks: it leaves an intent in
     # Memory's near-term tier where the main model will see it, and emits a
     # brief_requested event for whatever listens on the webhook.
+    # In the aging flow the brief is OPTIONAL (design note, 22 Oct 2026): the
+    # clock picks what is drafted, so bedtime sleeps with or without one, and
+    # nobody is asked or pulled. A brief that is waiting still starts the
+    # sleep at once and is read as context. One asked for with no session
+    # behind it only retells the short-terms the small model is about to read.
     brief_request: bool = True
     brief_check_misses: int = 3
     # brief_pull: with no main model to write briefs, let the small model pull
@@ -218,6 +240,14 @@ class SleepConfig(BaseModel):
     brief_pull: bool = False
     # Where the hippocampus keeps its own last-run record (it has no store).
     state_path: str = "~/.seren-hippocampus/state.json"
+
+    @field_validator("flow")
+    @classmethod
+    def _known_flow(cls, v: str) -> str:
+        v = (v or "aging").strip().lower()
+        if v not in ("aging", "all"):
+            raise ValueError(f"sleep.flow must be aging or all, not {v!r}")
+        return v
 
     @field_validator("max_attempts")
     @classmethod

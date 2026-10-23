@@ -45,7 +45,7 @@ details.entry > summary { cursor: pointer; list-style: none; }
 details.entry > summary::-webkit-details-marker { display: none; }
 .attempt { border-left: 2px solid var(--border); margin: 8px 0 0 4px; padding-left: 10px; }
 .replay-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.replay-form select, .replay-form input { flex: 1 1 260px; min-width: 0; padding: 6px 8px; background: transparent;
+.replay-form select, .replay-form input { flex: 1 1 260px; min-width: 0; padding: 6px 8px;
     color: inherit; border: 1px solid var(--border); border-radius: 6px; font: inherit; }
 .replay-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
 code.id { font-size: 11px; opacity: .6; }

@@ -375,7 +375,7 @@ def test_every_draft_says_which_model_wrote_it(memory, make_hippo):
     finally:
         h.model.shutdown()
     h._cfg.model.url = ""
-    assert h._stamp() == {"model_mode": "mechanical", "model_prompt": PROMPT_VERSION}
+    assert h._stamp() == {"model_mode": "mechanical", "model_prompt": PROMPT_VERSION, "sleep_flow": "all"}
 
 
 # ── the easy way: server + model_path (28 Sept 2026) ─────────────────────

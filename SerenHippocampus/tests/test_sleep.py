@@ -131,7 +131,9 @@ def test_model_sleep_can_supersede(memory, make_hippo):
     res = review(memory, d["id"], [{"op": 0, "verdict": "approve"}])["results"][0]
     assert res["superseded"] == old
     assert list(cores(memory)) == [res["long_term_id"]]
-    assert cores(memory, include_superseded=True)[old]["metadata"]["superseded_by"] == res["long_term_id"]
+    # the old core is the new one's satellite now: the trail under what is true
+    blue = cores(memory, include_superseded=True, include_satellites=True)[old]["metadata"]
+    assert blue["superseded_by"] == res["long_term_id"] and blue["core_id"] == res["long_term_id"]
 
 
 def test_a_brief_hint_lowers_the_threshold_and_a_fresh_brief_is_not_pulled(memory, make_hippo):

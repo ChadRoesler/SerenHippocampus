@@ -48,6 +48,13 @@ class MemoryClient:
     def shorts(self, limit: int = 500) -> list[dict[str, Any]]:
         return list(self._req("GET", "/short", params={"limit": limit}).get("entries") or [])
 
+    def aging(self, within_seconds: float) -> dict[str, Any]:
+        """The short-terms that reach the end of their lifetime within
+        within_seconds (already past it included), oldest first, and the
+        lifetime Memory owns: {lifetime_seconds, entries}."""
+        got = self._req("GET", "/short/aging", params={"within_seconds": float(within_seconds)})
+        return got if isinstance(got, dict) else {"entries": []}
+
     def open_briefs(self, limit: int = 50) -> list[dict[str, Any]]:
         got = self._req("GET", "/brief", params={"limit": limit})
         rows = got.get("entries") if isinstance(got, dict) else got

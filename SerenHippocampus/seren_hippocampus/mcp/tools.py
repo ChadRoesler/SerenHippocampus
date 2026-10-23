@@ -442,8 +442,10 @@ class HippocampusToolImpl:
         if rep.get("memory_reachable") is False:
             return rep
         status = rep.get("status")
-        if status in ("sleeping", "sleeping_on_pulled_brief") and rep.get("sleep"):
+        if status in ("sleeping", "sleeping_on_pulled_brief", "sleeping_without_brief") and rep.get("sleep"):
             msg = ("Slept on the small model's pulled brief. " if status == "sleeping_on_pulled_brief"
+                   else "Bedtime, no brief: slept without one (the aging flow does not wait). "
+                   if status == "sleeping_without_brief"
                    else f"Slept on brief {rep.get('brief_id')}. ") + _say_sleep(rep["sleep"])
             ok = not rep["sleep"].get("error")
         elif status == "error":

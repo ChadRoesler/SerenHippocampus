@@ -99,9 +99,13 @@ def bridge(memory) -> httpx.MockTransport:
 
 @pytest.fixture
 def hcfg(tmp_path) -> HippocampusConfig:
+    # flow "all": these tests write a memory and sleep on it at once, which is
+    # the earlier draft-everything flow, and the drafting, review and redraft
+    # machinery they pin is shared by both. The default flow, which touches
+    # only what is at the end of its week, is test_aging_sleep.py's.
     return HippocampusConfig(
         model=ModelConfig(url=""),                       # mechanical unless a test turns the model on
-        sleep=SleepConfig(mode="external", promote_min_evidence=2, max_attempts=3,
+        sleep=SleepConfig(mode="external", promote_min_evidence=2, max_attempts=3, flow="all",
                           state_path=str(tmp_path / "state.json")))
 
 
