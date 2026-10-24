@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from seren_meninges.auth import bearer_auth_middleware
@@ -377,6 +377,97 @@ def create_app(config: Optional[HippocampusConfig] = None,
     async def voice_history(request: Request, limit: int = 10):
         rows = await asyncio.to_thread(_voice(request).history, max(1, min(int(limit), 200)))
         return {"count": len(rows), "versions": rows}
+
+    # -- lessons: the consolidator's training set, from the reviews
+    # (seren_hippocampus.lessons). The Lyceum imports the .jsonl as a dataset.
+    def _lessons(request: Request):
+        from .lessons import consolidator_set
+        return consolidator_set(request.app.state.hippocampus, request.app.state.memory)
+
+    @app.get("/training-set")
+    async def training_set(request: Request):
+        """What a training set made now would hold: counts, no rows."""
+        try:
+            _, report = await asyncio.to_thread(_lessons, request)
+        except MemoryError as e:
+            raise HTTPException(502, f"Memory did not answer: {e}")
+        return report
+
+    @app.get("/training-set.jsonl")
+    async def training_set_jsonl(request: Request):
+        """The lessons, one example per line ({"messages": [...]}); the
+        report rides in the X-Seren-Report header."""
+        import json as _json
+        from fastapi.responses import Response
+        from .lessons import to_jsonl
+        try:
+            rows, report = await asyncio.to_thread(_lessons, request)
+        except MemoryError as e:
+            raise HTTPException(502, f"Memory did not answer: {e}")
+        return Response(to_jsonl(rows), media_type="application/x-ndjson",
+                        headers={"X-Seren-Report": _json.dumps({k: v for k, v in report.items() if k != "say"}),
+                                 "Content-Disposition": 'attachment; filename="consolidator-lessons.jsonl"'})
+
+    # -- the model shelf: a model the Lyceum trained, brought over
+    # (seren_hippocampus.shelf). Refusals carry the reason and its status.
+    def _shelf(request: Request):
+        from .shelf import Shelf
+        return Shelf(cfg, request.app.state.hippocampus)
+
+    async def _shelf_call(fn, *a):
+        from .shelf import ShelfError
+        try:
+            return await asyncio.to_thread(fn, *a)
+        except ShelfError as e:
+            raise HTTPException(e.status, str(e))
+        except Busy as e:
+            raise HTTPException(409, str(e))
+
+    @app.get("/models")
+    async def models(request: Request):
+        """The model box (what it has, what it serves) and the Lyceum's
+        finished trainings. Each half says why it is missing, if it is."""
+        from .shelf import ShelfError
+        sh = _shelf(request)
+        out: dict[str, Any] = {"lyceum": {"configured": sh.lyceum_configured, "url": cfg.lyceum.url or None},
+                               "lodestar": {"configured": sh.lodestar_configured}}
+        try:
+            out["box"] = await asyncio.to_thread(sh.serving)
+        except ShelfError as e:
+            out["box"] = {"error": str(e)}
+        try:
+            out["fetch"] = await asyncio.to_thread(sh.fetch_status)
+        except ShelfError:
+            out["fetch"] = None
+        try:
+            out["trained"] = await asyncio.to_thread(sh.lyceum_models) if sh.lyceum_configured else []
+        except ShelfError as e:
+            out["trained"], out["lyceum"]["error"] = [], str(e)
+        return out
+
+    @app.post("/models/fetch")
+    async def models_fetch(request: Request, body: dict = Body(...)):
+        """{job_id, path?}: the model box fetches that Lyceum training's GGUF."""
+        job_id = str((body or {}).get("job_id") or "")
+        if not job_id:
+            raise HTTPException(400, "'job_id' is required")
+        return await _shelf_call(_shelf(request).fetch, job_id, str(body.get("path") or ""))
+
+    @app.get("/models/fetch")
+    async def models_fetch_status(request: Request):
+        return await _shelf_call(_shelf(request).fetch_status)
+
+    @app.post("/models/use")
+    async def models_use(request: Request, body: dict = Body(...)):
+        """{name}: a .gguf on the model box; the small model from now on."""
+        name = str((body or {}).get("name") or "")
+        if not name:
+            raise HTTPException(400, "'name' is required")
+        return await _shelf_call(_shelf(request).use, name)
+
+    @app.delete("/models/{name}")
+    async def models_forget(request: Request, name: str):
+        return await _shelf_call(_shelf(request).forget, name)
 
     @app.get("/viewer")
     async def viewer():

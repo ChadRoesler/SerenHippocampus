@@ -42,6 +42,16 @@
     <div id="audit-chains"></div>
 </section>
 
+<section class="view" id="models">
+    <p class="hint">The small model that drafts at night, and the ones trained to replace it. A model trained in the Lyceum is fetched by the box that runs the small model, straight from the Lyceum; switching waits for no sleep to be running, keeps the old file, and going back is one more switch. Judge the change in the Audit: every draft carries the name of the model that wrote it.</p>
+    <div id="models-slot"><div class="empty">Asking the model box…</div></div>
+    <h3 class="sub">Trained in the Lyceum</h3>
+    <div id="lyceum-slot"></div>
+    <h3 class="sub">Lessons</h3>
+    <p class="hint">What a training set made from the reviews would hold right now: each drafting call's prompt, with what finally landed as the answer. The Lyceum imports it (Datasets: <i>from the hippocampus</i>).</p>
+    <div id="lessons-slot"><button class="btn" onclick="loadLessons()">Count them</button></div>
+</section>
+
 <section class="view" id="history">
     <p class="hint">The last few of each, newest first; "show more" opens older ones.</p>
     <h3 class="sub">Sleeps</h3>

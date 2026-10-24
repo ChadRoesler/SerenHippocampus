@@ -54,5 +54,13 @@ code.id { font-size: 11px; opacity: .6; }
 /* History: the 'show more' button under a short list */
 .btn.more { margin: 6px 0 14px; font-size: 12px; opacity: 0.85; }
 
+/* the Models tab: the box's shelf, the Lyceum's trainings */
+.shelf-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.shelf-row .grow { flex: 1; min-width: 0; }
+.shelf-row b { word-break: break-all; }
+.bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; margin-top: 8px; }
+.bar i { display: block; height: 100%; background: var(--accent); transition: width .5s ease; }
+.badge.serving { color: var(--accent); }
+
 /* the header pill when Memory is not answering */
 .head-pill.bad { color: #e06c75; border-color: #e06c75; }

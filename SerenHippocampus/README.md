@@ -395,7 +395,7 @@ ripple:
   type: script
   command: ["claude", "-p", "{message}",
             "--allowedTools", "mcp__seren-memory,mcp__seren-loci,mcp__seren-corpuscallosum,mcp__seren-margin,mcp__seren-hippocampus"]
-  cwd: "D:\\serenDaemon\\SerenCore"     # the project the memory MCP servers are registered for
+  cwd: "D:\\work\\project"     # the project the memory MCP servers are registered for
   run_as: "alice"                       # whose login `claude` uses
 ```
 

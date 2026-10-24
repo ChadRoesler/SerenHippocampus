@@ -247,3 +247,24 @@ def test_the_tick_carries_out_a_flagged_restore_and_says_so(memory, make_hippo):
     assert ev and ev[-1]["ids"] == [core] and any("earlier wording" in m for m in said)
     h.check()
     assert len([e for e in h.state["events"] if e["event"] == "restored"]) == 1, "done once"
+
+
+@pytest.mark.skipif(not _memory_has("fold"), reason="the installed seren-memory predates relink and fold")
+def test_the_tick_says_what_it_relinked_and_folded(memory, make_hippo):
+    a, b = _core(memory, "The cabin blackout: cards by headlamp."), _core(memory, "The garden in spring.")
+
+    def sat(core, text):
+        did = memory.post("/drafts", json={"operations": [
+            {"kind": "attach", "content": text, "topic": "t", "target_core_id": core}]}).json()["id"]
+        return review(memory, did, [{"op": 0, "verdict": "approve", "restate": False}])["results"][0]["satellite_id"]
+    dog, twin, twin2 = sat(a, "The dog ate the cards."), sat(a, "The mint again."), sat(b, "The mint again.")
+    store = memory.app.state.store
+    store.flag_relink(dog, link=[b], reason="the dog dug up the garden too")
+    store.flag_fold(twin, twin2, "the same episode, kept twice")
+    said: list[str] = []
+    h = make_hippo()
+    h._log = said.append
+    h.check()
+    assert "relinked 1 satellite(s)" in said and "folded 1 satellite(s)" in said
+    events = {e["event"]: e for e in h.state["events"]}
+    assert events["relinked"]["ids"] == [dog] and events["folded"]["ids"] == [twin]

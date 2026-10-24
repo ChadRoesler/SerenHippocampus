@@ -255,6 +255,30 @@ def strip_scaffolding(text: str) -> tuple[str, bool]:
     return (text or "").strip(), False
 
 
+# The cores as _core_lines shows them: cut at core_chars with "...", then
+# "(N episode(s) already attached)", then "one of its episodes: ...". On 23
+# Oct 2026 the model handed that line back as Seren's story restated - the
+# core cut off mid-word, the count where its ending was - and grounded() passed
+# it, since it is the core's own words. Memory's review refuses it too; this
+# keeps it from reaching the review at all.
+_CORE_LINE_MARKS = re.compile(r"\(\s*\d+\s+episode\(s\)\s+already attached\s*\)|\bone of its episodes:", re.I)
+
+
+def echoes_core_line(core: str, restated: str) -> Optional[str]:
+    """Why a rewording is the core as the prompt showed it rather than the
+    core said again - its markup, or the core cut short at '...' - or None."""
+    r = restated or ""
+    if _CORE_LINE_MARKS.search(r):
+        return "carries the core list's markup"
+    for m in re.finditer(r"(?:\.\.\.|…)", r):
+        before = r[:m.start()].rstrip()[-40:]
+        at = core.find(before) if len(before) >= 20 else -1
+        rest = core[at + len(before):] if at >= 0 else ""
+        if at >= 0 and len(rest) > 20 and not rest.lstrip().startswith(("...", "…")):
+            return "is the core cut short where the prompt cut it"
+    return None
+
+
 COVER_SENTENCE_MIN = 0.3   # a sentence this little of whose words are in the operation was not carried
 COVER_SENTENCE_WORDS = 6   # ...when it has at least this many words worth carrying
 
@@ -956,6 +980,16 @@ class Hippocampus:
                 self._log(f"put back the earlier wording of {len(restored)} core(s): " +
                           ", ".join(str(t.get("id")) + (f" ({t['error']})" if t.get("error") else "") for t in restored))
                 self._emit("restored", count=len(restored), ids=[t.get("id") for t in restored])
+            # Satellites moved between cores, and episodes kept twice made one
+            # (Memory's relink and fold, 23 Oct 2026): the same flag-then-tick
+            # gate, and until now the only part of the tick that went unsaid.
+            for key in ("relinked", "folded"):
+                done = flags.get(key) or []
+                if done:
+                    odd = [f"{str(t.get('id'))[:8]} ({t.get('error') or t.get('kept') or 'kept on ' + ', '.join(t['kept_on'])})"
+                           for t in done if t.get("error") or t.get("kept") or t.get("kept_on")]
+                    self._log(f"{key} {len(done)} satellite(s)" + (": " + "; ".join(odd) if odd else ""))
+                    self._emit(key, count=len(done), ids=[t.get("id") for t in done])
 
             brief = self._mem.latest_brief()
             if brief and brief.get("id") in (self.state.get("parked_briefs") or []):
@@ -1725,7 +1759,11 @@ class Hippocampus:
                 target = None
             if kind == "refine":
                 core_text = (cores.get(target) or {}).get("content") or ""
-                if (not restated or restated == content
+                echo = echoes_core_line(core_text, restated) if restated else None
+                if echo:
+                    self._log(f"{topic or 'untagged'}: a refine whose rewording {echo}; kept as support")
+                    kind = "support"
+                elif (not restated or restated == content
                         or (target and not grounded(restated, source + [{"content": core_text}]))):
                     self._log(f"{topic or 'untagged'}: a refine with no usable rewording of the core; kept as support")
                     kind = "support"
@@ -2093,6 +2131,11 @@ class Hippocampus:
             # it would REPLACE the core's text with the episode. It is not a
             # restatement, so it goes.
             if restated == content:
+                restated = ""
+            echo = echoes_core_line(next((c.get("content") or "" for c in candidates if c["id"] == target), ""),
+                                    restated) if restated and target else None
+            if echo:
+                self._log(f"{topic or 'untagged'}: dropped a rewording of core {str(target)[:8]} that {echo}")
                 restated = ""
             if not grounded(f"{content} {restated}", entries):
                 self._log(f"{topic or 'untagged'}: dropped a {kind} whose text is not in the fragments "

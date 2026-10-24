@@ -335,4 +335,91 @@ async function runNow(kind) {
     }
 }
 
+// ── Models: the small model's shelf (seren_hippocampus.shelf) ──────────────────
+let modelsPoll = null;
+const fileOf = (p) => String(p || '').split(/[\\/]/).pop();
+const mb = (n) => n == null ? '' : n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${n} MB`;
+
+async function loadModels() {
+    let m;
+    try { m = await api('/models'); }
+    catch (e) { $('models-slot').innerHTML = `<div class="err">The shelf did not answer: ${escapeHtml(e.message)}</div>`; return; }
+    const box = m.box || {}, serving = (box.serving || {}), f = m.fetch || {};
+    const cur = fileOf(serving.current), prev = fileOf(serving.previous);
+    const onBox = new Set((box.models || []).map(x => x.name));
+    let html = '';
+    if (box.error) {
+        html = `<div class="err">The model box: ${escapeHtml(box.error)}</div>`;
+    } else {
+        html = `<div class="entry"><div class="kv">
+            <span class="k">serving</span><span class="v"><b>${escapeHtml(cur || 'nothing set')}</b>${box.node ? ` on ${escapeHtml(box.node)}` : ''}</span>
+            ${prev ? `<span class="k">before it</span><span class="v">${escapeHtml(prev)}</span>` : ''}</div></div>`;
+        html += (box.models || []).map(x => `<div class="entry"><div class="shelf-row">
+            <span class="grow"><b>${escapeHtml(x.name)}</b> <span class="hint">${mb(x.size_mb)}</span></span>
+            ${x.name === cur ? '<span class="badge serving">serving</span>'
+              : `<button class="btn" onclick="useModel('${escapeHtml(x.name)}')">${x.name === prev ? 'Go back to it' : 'Use it'}</button>
+                 <button class="btn more" onclick="forgetModel('${escapeHtml(x.name)}')">Delete</button>`}
+            </div></div>`).join('');
+    }
+    if (f.state === 'fetching' || (f.state && f.state !== 'idle' && f.ended_at && Date.now() / 1000 - f.ended_at < 600)) {
+        const pct = f.total ? Math.round(100 * f.bytes / f.total) : null;
+        html += `<div class="entry ${f.state === 'failed' ? 'bad' : ''}">
+            <div>${f.state === 'fetching' ? 'Fetching' : f.state === 'done' ? 'Fetched' : 'Could not fetch'} <b>${escapeHtml(f.name || '')}</b>
+            ${f.state === 'fetching' ? `<span class="hint">${mb(Math.round((f.bytes || 0) / 2 ** 20))}${f.total ? ` of ${mb(Math.round(f.total / 2 ** 20))}` : ''}</span>` : ''}
+            ${f.error ? `<div class="hint">${escapeHtml(f.error)}</div>` : ''}</div>
+            ${pct != null && f.state === 'fetching' ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}</div>`;
+    }
+    $('models-slot').innerHTML = html;
+
+    const ly = m.lyceum || {};
+    $('lyceum-slot').innerHTML = !ly.configured
+        ? `<div class="empty">No Lyceum is configured. Add a <code>lyceum:</code> block (url and bearer_token) to this service's config.</div>`
+        : ly.error ? `<div class="err">The Lyceum: ${escapeHtml(ly.error)}</div>`
+        : !(m.trained || []).length ? `<div class="empty">Nothing finished with a GGUF in the Lyceum yet.</div>`
+        : m.trained.map(t => `<div class="entry"><div class="shelf-row">
+            <span class="grow"><b>${escapeHtml(t.name || t.job_id)}</b>
+              <div class="hint">${escapeHtml(t.file)} · ${escapeHtml(mb(Math.round((t.bytes || 0) / 2 ** 20)))} · from ${escapeHtml(t.base_model || '?')} on ${escapeHtml(t.dataset || '?')}${t.eval_loss != null ? ` · held-back loss ${Number(t.eval_loss).toFixed(3)}` : ''} · ${relAge(t.created_at)}</div></span>
+            ${onBox.has(t.file) ? (t.file === cur ? '<span class="badge serving">serving</span>' : `<button class="btn" onclick="useModel('${escapeHtml(t.file)}')">Use it</button>`)
+              : `<button class="btn" ${f.state === 'fetching' ? 'disabled' : ''} onclick="fetchModel('${escapeHtml(t.job_id)}', '${escapeHtml(t.path)}')">Bring it over</button>`}
+            </div></div>`).join('');
+
+    clearTimeout(modelsPoll);
+    if (f.state === 'fetching' && $('models').classList.contains('active')) modelsPoll = setTimeout(loadModels, 2000);
+}
+
+async function fetchModel(job, path) {
+    try { await api('/models/fetch', { method: 'POST', body: JSON.stringify({ job_id: job, path }) }); }
+    catch (e) { alert(`Could not start the fetch: ${e.message}`); }
+    loadModels();
+}
+
+async function useModel(name) {
+    if (!confirm(`Draft with ${name} from now on?\n\nThe next sleep uses it. The one it replaces stays on the box, and switching back is one click.`)) return;
+    try {
+        const r = await api('/models/use', { method: 'POST', body: JSON.stringify({ name }) });
+        alert(r.say || 'switched');
+    } catch (e) { alert(/409/.test(e.message) ? 'A sleep or tend is running; switch when it is done.' : `Could not switch: ${e.message}`); }
+    loadModels();
+}
+
+async function forgetModel(name) {
+    if (!confirm(`Delete ${name} from the model box? It can be fetched again from the Lyceum.`)) return;
+    try { await api(`/models/${encodeURIComponent(name)}`, { method: 'DELETE' }); }
+    catch (e) { alert(`Could not delete it: ${e.message}`); }
+    loadModels();
+}
+
+async function loadLessons() {
+    $('lessons-slot').innerHTML = '<div class="empty">Reading the reviews…</div>';
+    try {
+        const r = await api('/training-set');
+        const skipped = Object.entries(r.skipped || {}).map(([k, v]) => `${v} ${k}`).join('; ');
+        $('lessons-slot').innerHTML = `<div class="entry"><div>${escapeHtml(r.say || '')}</div>
+            <div class="kv" style="margin-top:8px">
+            <span class="k">read</span><span class="v">${r.calls_read} drafting calls</span>
+            <span class="k">left out</span><span class="v">${escapeHtml(skipped || 'nothing')}</span>
+            <span class="k">length</span><span class="v">${r.chars_median} characters typical, ${r.chars_max} the longest</span></div></div>`;
+    } catch (e) { $('lessons-slot').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`; }
+}
+
 document.addEventListener('DOMContentLoaded', load);

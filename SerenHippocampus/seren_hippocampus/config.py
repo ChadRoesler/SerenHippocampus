@@ -56,6 +56,25 @@ class MemoryTarget(BaseModel):
                              env_var=self.bearer_token_env or None)
 
 
+class LyceumTarget(BaseModel):
+    """The Lyceum (seren-lyceum): where the small model's next version is
+    trained. Optional. With it, the viewer's Models tab lists the Lyceum's
+    finished trainings and brings one over (seren_hippocampus.shelf); the
+    Lyceum, the other way, imports this hippocampus's lessons as a dataset.
+    The url is one the MODEL BOX can reach too: the node that runs llama
+    fetches the file from it directly."""
+    url: str = ""
+    bearer_token: str = Field(default="", repr=False)
+    bearer_token_env: str = ""
+    bearer_token_keyring: str = ""
+    timeout_seconds: float = 30.0
+
+    def resolve_bearer(self) -> str:
+        return resolve_token(inline=self.bearer_token or None,
+                             keyring_ref=self.bearer_token_keyring or None,
+                             env_var=self.bearer_token_env or None)
+
+
 class ModelLifecycleConfig(BaseModel):
     """Start the small model when it is needed, stop it when it is not.
     See seren_hippocampus.model_lifecycle for the why (a Nano floor, a 4 GB
@@ -394,6 +413,7 @@ class HippocampusConfig(BaseModel):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
+    lyceum: LyceumTarget = Field(default_factory=LyceumTarget)
 
     def resolved_backup_dir(self) -> Path:
         if self.backup.dir.strip():
@@ -520,6 +540,7 @@ def load_config(explicit_path: Optional[str] = None) -> HippocampusConfig:
         ripple=_block(RippleConfig, data.get("ripple"), "ripple"),      # type: ignore[arg-type]
         voice=_block(VoiceConfig, data.get("voice"), "voice"),          # type: ignore[arg-type]
         backup=_block(BackupConfig, data.get("backup"), "backup"),      # type: ignore[arg-type]
+        lyceum=_block(LyceumTarget, data.get("lyceum"), "lyceum"),      # type: ignore[arg-type]
     )
     off = os.getenv(f"{ENV_PREFIX}_UPDATES_ENABLED")
     if off is not None:

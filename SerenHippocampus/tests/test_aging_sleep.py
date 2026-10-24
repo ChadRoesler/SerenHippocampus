@@ -27,6 +27,8 @@ Pinned here:
   text, a supersede with no quote is an attach unless the critique asked
 - with no model: a topic over the bar becomes a core, one under it ages out
 - a replay of an aging draft is judged the way the sleep judged it
+- a refine that hands back the core as the prompt showed it (cut short, the
+  episode count pasted in) is support, its rewording dropped
 """
 from __future__ import annotations
 
@@ -34,6 +36,8 @@ import re
 import time
 
 from conftest import as_json, cores, review, short
+
+from seren_hippocampus.sleep import echoes_core_line
 
 DAY = 24 * 3600
 
@@ -167,6 +171,25 @@ def test_a_refine_rewords_the_core(memory, make_hippo):
     assert op["kind"] == "attach" and op["restated_content"] == "The workbench is light aqua."
     review(memory, rep["draft_id"], [{"op": 0, "verdict": "approve", "restate": True}])
     assert cores(memory)[core]["content"] == "The workbench is light aqua."
+
+
+def test_a_refine_that_hands_back_the_core_line_is_support(memory, make_hippo):
+    # 23 Oct 2026: a persona's story came back as its own prompt line - cut off
+    # mid-word, the episode count where its ending was
+    story = ("A persona's story, as Alice told it on 29 Sept 2026: the pancakes-or-waffles would-you-rather, "
+             "the song it left Alice, and the lesson that the answer to a bit never matters, only drilling into it.")
+    core = _core(memory, story, "seren")
+    h = _aging(make_hippo, lambda p: as_json({"operations": [{
+        "kind": "refine", "aging": [0], "target_core_id": _core_ids(p)[0],
+        "restated_content": story[:120] + "...  (5 episode(s) already attached)"}]}))
+    lines: list[str] = []
+    h._log = lines.append
+    _aged(memory, "Alice told the persona's story again, the would-you-rather and the song it left.", "seren")
+    op = _ops(memory, h.sleep()["draft_id"])[0]
+    assert op["kind"] == "attach" and op["target_core_id"] == core and not op.get("restated_content")
+    assert any("kept as support" in line and "markup" in line for line in lines)
+    assert echoes_core_line(story, story[:150] + "... and more") == "is the core cut short where the prompt cut it"
+    assert echoes_core_line(story, story + " Told again on 23 Oct.") is None
 
 
 def _replace_with(quote):
