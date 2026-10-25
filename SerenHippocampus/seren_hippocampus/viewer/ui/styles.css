@@ -10,9 +10,8 @@
 .stat.bad .big { color: #e06c75; }
 
 .row-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-.btn { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent); background: transparent; color: var(--accent); cursor: pointer; }
-.btn:hover { background: var(--accent); color: var(--bg); }
-.btn[disabled] { opacity: .5; cursor: wait; }
+/* buttons (.btn, .btn.primary ...) and fields come from the shell (seren_meninges tokens.css, 24 Oct 2026) */
+.btn[disabled] { cursor: wait; }
 .hint { font-size: 13px; opacity: .8; line-height: 1.5; }
 .sub { font-size: 14px; letter-spacing: .04em; text-transform: uppercase; opacity: .8; margin: 22px 0 8px; }
 
@@ -45,8 +44,7 @@ details.entry > summary { cursor: pointer; list-style: none; }
 details.entry > summary::-webkit-details-marker { display: none; }
 .attempt { border-left: 2px solid var(--border); margin: 8px 0 0 4px; padding-left: 10px; }
 .replay-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.replay-form select, .replay-form input { flex: 1 1 260px; min-width: 0; padding: 6px 8px;
-    color: inherit; border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+.replay-form select, .replay-form input { flex: 1 1 260px; min-width: 0; }
 .replay-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
 code.id { font-size: 11px; opacity: .6; }
 .empty { opacity: .7; padding: 18px 0; }
