@@ -21,7 +21,7 @@ dependencies = [
     "pyyaml>=6.0",
     "httpx>=0.26",
     "seren-meninges>=6.0.0,<7",
-    "seren-sinew>=1.11.0,<6",  # 1.11.0: seren_sinew.orchestration (ensure / release through Lodestar)
+    "seren-sinew>=5.3.0,<6",  # 5.3.0: request ids carried to the next hop (request_id_hooks / request_id_scope), seren_sinew.atomic; 1.11.0: seren_sinew.orchestration (ensure / release through Lodestar)
 ]
 
 [project.optional-dependencies]

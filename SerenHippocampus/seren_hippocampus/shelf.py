@@ -30,6 +30,7 @@ from pathlib import PurePosixPath
 from typing import Any, Optional
 
 import httpx
+from seren_sinew.request_log import request_id_hooks
 
 
 class ShelfError(RuntimeError):
@@ -58,7 +59,7 @@ class Shelf:
               timeout: float = 60.0) -> Any:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:
-            with httpx.Client(timeout=timeout, transport=self._transport) as c:
+            with httpx.Client(timeout=timeout, transport=self._transport, event_hooks=request_id_hooks()) as c:
                 r = c.request(method, base.rstrip("/") + path, headers=headers, json=body)
         except httpx.HTTPError as e:
             raise ShelfError(f"{base} did not answer ({type(e).__name__})", 502) from e

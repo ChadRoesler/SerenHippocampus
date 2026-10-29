@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import httpx
+from seren_sinew.request_log import request_id_hooks
 from seren_sinew.ripple import RippleRunner, fill
 
 
@@ -155,7 +156,7 @@ class Ripple:
         tok = self._cfg.resolve_bearer()
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
-        with httpx.Client(timeout=30.0, transport=self._transport) as c:
+        with httpx.Client(timeout=30.0, transport=self._transport, event_hooks=request_id_hooks()) as c:
             r = c.post(self._cfg.url, json={"service": "seren-hippocampus", "message": msg, **ev},
                        headers=headers)
         if r.is_success:

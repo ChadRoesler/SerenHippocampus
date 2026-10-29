@@ -22,11 +22,12 @@ canary). Kept beside the state file, as voice.json, written atomically.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
+
+from seren_sinew.atomic import write_json
 
 # The last this many versions are kept; older ones are dropped oldest first.
 KEEP_VERSIONS = 200
@@ -60,10 +61,7 @@ class VoiceCard:
             return []
 
     def _save(self, versions: list[dict[str, Any]]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"versions": versions[-KEEP_VERSIONS:]}, indent=2), encoding="utf-8")
-        os.replace(tmp, self._path)
+        write_json(self._path, {"versions": versions[-KEEP_VERSIONS:]})
 
     # -- reads -----------------------------------------------------------
     def current(self) -> Optional[dict[str, Any]]:

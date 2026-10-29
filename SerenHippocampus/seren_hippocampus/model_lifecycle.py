@@ -62,6 +62,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
 import httpx
+from seren_sinew.request_log import request_id_hooks
 
 
 class ModelUnavailable(RuntimeError):
@@ -98,7 +99,7 @@ class ModelLifecycle:
 
     def healthy(self) -> bool:
         try:
-            with httpx.Client(timeout=3.0, transport=self._transport) as c:
+            with httpx.Client(timeout=3.0, transport=self._transport, event_hooks=request_id_hooks()) as c:
                 r = c.get(self.health_url)
             return r.status_code == 200
         except Exception:  # noqa: BLE001 - down is an answer
@@ -227,7 +228,7 @@ class ModelLifecycle:
         tok = self._lc.resolve_observatory_token()
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
-        with httpx.Client(timeout=60.0, transport=self._transport) as c:
+        with httpx.Client(timeout=60.0, transport=self._transport, event_hooks=request_id_hooks()) as c:
             r = c.post(url, headers=headers)
         r.raise_for_status()
         body = r.json() if r.content else {}
@@ -242,7 +243,7 @@ class ModelLifecycle:
         tok = self._lc.resolve_lodestar_token()
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
-        with httpx.Client(timeout=timeout, transport=self._transport) as c:
+        with httpx.Client(timeout=timeout, transport=self._transport, event_hooks=request_id_hooks()) as c:
             r = c.post(url, headers=headers, json=body)
         r.raise_for_status()
         out = r.json() if r.content else {}

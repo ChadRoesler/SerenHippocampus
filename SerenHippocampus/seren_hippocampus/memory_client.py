@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import httpx
+from seren_sinew.request_log import request_id_hooks
 
 
 class MemoryError(RuntimeError):
@@ -22,7 +23,7 @@ class MemoryClient:
                  transport: Optional[httpx.BaseTransport] = None):
         headers = {"Authorization": f"Bearer {bearer}"} if bearer else {}
         self._c = httpx.Client(base_url=base_url.rstrip("/"), headers=headers,
-                               timeout=timeout, transport=transport)
+                               timeout=timeout, transport=transport, event_hooks=request_id_hooks())
         self.base_url = base_url.rstrip("/")
 
     def close(self) -> None:

@@ -54,6 +54,7 @@ blue, is a judgement, and a threshold is not one.
 """
 from __future__ import annotations
 
+import functools
 import json
 import re
 import threading
@@ -62,6 +63,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+from seren_sinew.atomic import write_json
+from seren_sinew.request_log import request_id_hooks, request_id_scope
 
 from .config import HippocampusConfig
 from .memory_client import MemoryClient, MemoryError
@@ -71,6 +74,19 @@ from .voice import VoiceCard
 from . import replay as rp
 
 OP_KINDS = ("new_core", "attach", "supersede", "verbatim")
+
+
+def _scoped(prefix: str):
+    """One request id for everything a sleep, tend or tick sends (design note,
+    25 Oct 2026): Memory's log shows every call one sleep made under one id.
+    Started by a request (POST /sleep), it keeps that request's id."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def inner(*a, **kw):
+            with request_id_scope(prefix=prefix):
+                return fn(*a, **kw)
+        return inner
+    return wrap
 
 # ── grouping memories, and matching a brief's hints to them (30 Sept 2026) ──
 # Memories used to be grouped by their exact topic string, so "wren,alice,
@@ -509,7 +525,7 @@ class Hippocampus:
 
     def _save_state(self) -> None:
         try:
-            self._state_path().write_text(json.dumps(self.state, indent=2), encoding="utf-8")
+            write_json(self._state_path(), self.state)
         except Exception as e:  # noqa: BLE001 - the state file is a convenience, never load-bearing
             self._log(f"could not write state file: {e}")
 
@@ -546,7 +562,7 @@ class Hippocampus:
         for k, v in (extra_body or {}).items():
             payload.setdefault(k, v)
         try:
-            with httpx.Client(timeout=timeout) as c:
+            with httpx.Client(timeout=timeout, event_hooks=request_id_hooks()) as c:
                 r = c.post(url.rstrip("/") + "/chat/completions", json=payload)
                 r.raise_for_status()
                 body = r.json()
@@ -598,6 +614,7 @@ class Hippocampus:
         return None
 
     # ── public entry points ───────────────────────────────────────────────
+    @_scoped("sleep-")
     def sleep(self, ask_for_brief: bool = False) -> dict[str, Any]:
         """Sleep NOW, by hand (POST /sleep, the viewer's button, the MCP
         sleep_now): on the open brief if there is one. In flow "all" the loop
@@ -652,6 +669,7 @@ class Hippocampus:
         finally:
             self._lock.release()
 
+    @_scoped("tend-")
     def tend(self, redraft: bool = True) -> dict[str, Any]:
         """Tend the open chains. By hand (tend_now, POST /tend) it always
         redrafts. The loop passes redraft=False when the tend cycle says not
@@ -665,6 +683,7 @@ class Hippocampus:
 
     _last_retell: str = ""
 
+    @_scoped("retell-")
     def retell(self, limit: int = 12, min_tokens: int = 80,
                core_ids: Optional[list[str]] = None) -> dict[str, Any]:
         """A retell pass, by hand (POST /retell, the MCP retell_now): the
@@ -887,6 +906,7 @@ class Hippocampus:
         except MemoryError:
             return False
 
+    @_scoped("check-")
     def check(self, now: Optional[float] = None) -> dict[str, Any]:
         """Check for a brief; sleep on it if one is there and no chain is
         open; count the misses after bedtime and ask when they add up."""
@@ -920,6 +940,7 @@ class Hippocampus:
         return {"ok": True, "woke": woke,
                 "message": "carrying on now" if woke else "noted; the next tick carries on"}
 
+    @_scoped("tick-")
     def tick(self) -> dict[str, Any]:
         """One turn of the loop: tend the open chains, check for a brief, and
         stop a model this hippocampus started once it is not needed."""
