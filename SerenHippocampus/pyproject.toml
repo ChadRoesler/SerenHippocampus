@@ -27,7 +27,7 @@ dependencies = [
 [project.optional-dependencies]
 mcp = [
     # THE <2 CAP IS LOAD-BEARING: mcp 2.0.0 removed FastMCP (see SerenMemory).
-    "mcp>=1.0,<2",
+    "mcp>=1.0,<3",
 ]
 corp = [
     "truststore>=0.9",
