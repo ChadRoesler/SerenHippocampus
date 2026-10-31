@@ -102,6 +102,19 @@ tidy (age out, maintain near-term, sweep pruned). Short-terms a pending
 draft already holds are left alone. One chain at a time: a brief that
 arrives while a draft is under review waits its turn.
 
+**The orbit is the first candidate** (Memory's low core orbit, 30 Oct
+2026). A memory that was written close to a core carries that core on its
+metadata (`orbit`, with the distance): the store's own reading of where it
+belongs, taken while the memory was fresh. The drafting worker is shown
+those cores first, whatever the searches find, each aging memory is marked
+with the core it orbits, and the prompt says what to do with that: support
+or refine the orbited core unless the memory says something the core does
+not; two orbits is a shared episode; no orbit is a one-off or, over the
+bar, a story of its own. Memory's review view shows the same orbit beside
+every operation and questions an attach aimed elsewhere, so the drafter and
+the reviewer read off one hint. A Memory from before orbits carries none
+and nothing changes.
+
 `sleep.mode: thread` runs the tick here; `external` means something else
 POSTs `/tend` and `/check` (or `/sleep` by hand), and a `/nudge` runs one
 tick itself.

@@ -386,7 +386,7 @@ def clip(text: Optional[str], n: int) -> str:
 # Stamped on every draft with the model that wrote it (Memory's /audit groups
 # by it). Bump this when a drafting or redrafting prompt changes, so a change
 # in the numbers can be told apart from a change of model (26 Sept 2026).
-PROMPT_VERSION = "2026-10-22"                             # the aging flow: a verdict per memory at the end of its week
+PROMPT_VERSION = "2026-10-30"                             # the aging flow + the orbit: which core a memory was written near
 
 
 class Busy(RuntimeError):
@@ -1616,9 +1616,16 @@ class Hippocampus:
     def _aging_prompt(self, topic: Optional[str], entries: list[dict[str, Any]], context: list[dict[str, Any]],
                       candidates: list[dict[str, Any]], evidence: int, allowed_new: bool, steer: str) -> str:
         bar = self._cfg.sleep.promote_min_evidence
+        orbits = self._orbits_by_entry(candidates)
         aging_lines = "\n".join(
             f"[{i}] ({when(e)})" + (" PINNED: keep it, never age_out." if (e.get("metadata") or {}).get("pinned") else "")
+            + (" ORBITS core " + " and ".join(orbits[i]) + "." if orbits.get(i) else "")
             + f" {(e.get('content') or '').strip()}" for i, e in enumerate(entries))
+        orbit_rule = (
+            "A memory that ORBITS a core was written close to it: the store's own reading of where it belongs. "
+            "Support or refine that core unless the memory says something the core does not, and then say what. "
+            "A memory that orbits two cores supports both. A memory that orbits nothing is a one-off (age_out) "
+            "or, over the bar, a story of its own (new_core).\n" if orbits else "")
         n = max(0, int(self._cfg.sleep.context_shorts))
         cut = max(80, int(self._cfg.sleep.context_chars))
         ctx_lines = "\n".join(f"- ({when(s)}) {clip(s.get('content'), cut)}" for s in context[:n]) or "(none)"
@@ -1648,6 +1655,7 @@ class Hippocampus:
             "it.\n"
             "- age_out: a one-off with nowhere to go. It is let go.\n"
             f"{bar_line}\n"
+            f"{orbit_rule}"
             "The newer memories are context: they stay in short-term, so never put them in \"aging\". Use them "
             "to word a new core or a replace so it says the thing as it stands now.\n"
             "Return ONLY JSON:\n"
@@ -1674,7 +1682,8 @@ class Hippocampus:
         def saved(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # what a replay needs to judge the answer the way the sleep did
             return [{"id": r["id"], "content": r.get("content") or "",
-                     "metadata": {k: (r.get("metadata") or {}).get(k) for k in ("ts", "topic", "pinned")}}
+                     "metadata": {k: (r.get("metadata") or {}).get(k)
+                                  for k in ("ts", "topic", "pinned", "orbit", "orbit_distances")}}
                     for r in rows]
         call: dict[str, Any] = {"stage": "decide", "topic": topic, "prompt": prompt, "entries": saved(entries),
                                 "context": saved(context), "candidates": candidates, "evidence": evidence,
@@ -1914,6 +1923,30 @@ class Hippocampus:
         score: dict[str, float] = {}
         row: dict[str, dict[str, Any]] = {}
         via: dict[str, str] = {}
+        # THE ORBIT IS THE FIRST CANDIDATE (low core orbit, Memory 30 Oct
+        # 2026). A memory that was written close to a core carries that core
+        # on its metadata (orbit, orbit_distances): the store's own reading of
+        # where it belongs, taken when the memory was fresh. Those cores are
+        # shown first, whatever the searches find, and the prompt says which
+        # memory orbits which - the attach hint the drafter never had (on 20
+        # Oct three attaches aimed at the wrong core; on 29 Oct nine proposed
+        # satellites that already existed). A Memory from before orbits
+        # carries nothing, and this adds nothing.
+        orbit_of: dict[str, list[int]] = {}
+        orbit_d: dict[str, float] = {}
+        for i, e in enumerate(entries):
+            meta = e.get("metadata") or {}
+            ids = meta.get("orbit")
+            dists = meta.get("orbit_distances") if isinstance(meta.get("orbit_distances"), dict) else {}
+            for cid in ids if isinstance(ids, list) else []:
+                if not cid:
+                    continue
+                orbit_of.setdefault(str(cid), []).append(i)
+                d = dists.get(str(cid))
+                if isinstance(d, (int, float)) and (str(cid) not in orbit_d or float(d) < orbit_d[str(cid)]):
+                    orbit_d[str(cid)] = float(d)
+        for cid in orbit_of:
+            score[cid] = score.get(cid, 0.0) + 1.0            # above any rank a search can give
         failed = None
         for q in queries:
             try:
@@ -1953,7 +1986,20 @@ class Hippocampus:
                 c["satellites"] = int(sats)
             if via.get(cid):
                 c["via"] = via[cid]
+            if orbit_of.get(cid):
+                c["orbit_of"] = list(orbit_of[cid])
+                if cid in orbit_d:
+                    c["orbit_distance"] = round(orbit_d[cid], 4)
             out.append(c)
+        return out
+
+    @staticmethod
+    def _orbits_by_entry(candidates: list[dict[str, Any]]) -> dict[int, list[str]]:
+        """Which shown cores each aging memory orbits, by its number in the prompt."""
+        out: dict[int, list[str]] = {}
+        for c in candidates:
+            for i in c.get("orbit_of") or []:
+                out.setdefault(int(i), []).append(c["id"])
         return out
 
     def _core_lines(self, candidates: list[dict[str, Any]]) -> str:
@@ -1968,6 +2014,9 @@ class Hippocampus:
                    f" {text[:n]}" + ("..." if len(text) > n else "")
             if c.get("satellites"):
                 line += f"  ({c['satellites']} episode(s) already attached)"
+            if c.get("orbit_of"):
+                nums = ", ".join(f"[{i}]" for i in c["orbit_of"])
+                line += f"  (memory {nums} ORBITS this core: written close to it)"
             if c.get("via"):
                 line += f"\n      one of its episodes: {c['via'][:200]}"
             lines.append(line)
