@@ -382,7 +382,12 @@ def create_app(config: Optional[HippocampusConfig] = None,
     # (seren_hippocampus.lessons). The Lyceum imports the .jsonl as a dataset.
     def _lessons(request: Request):
         from .lessons import consolidator_set
-        return consolidator_set(request.app.state.hippocampus, request.app.state.memory)
+        # ?recover=1&redrafts=1&keys=1 (1 Nov 2026); none of them by default,
+        # so the Lyceum's plain "From the hippocampus" pull is unchanged
+        q = request.query_params
+        on = lambda k: (q.get(k) or "").lower() in ("1", "true", "yes", "on")
+        return consolidator_set(request.app.state.hippocampus, request.app.state.memory,
+                                recover=on("recover"), redrafts=on("redrafts"), keys=on("keys"))
 
     @app.get("/training-set")
     async def training_set(request: Request):

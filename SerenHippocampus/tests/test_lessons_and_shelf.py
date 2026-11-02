@@ -165,3 +165,34 @@ def test_refusals_carry_their_reason(shelf, make_hippo):
     with pytest.raises(ShelfError) as e:
         bare.serving()
     assert "Lodestar" in str(e.value)
+
+
+def test_a_redraft_is_a_lesson_in_todays_words(memory, make_hippo):
+    """1 Nov 2026: the critique made into a lesson. Today's redraft instructions over
+    the saved body, answered with what finally landed; off unless asked for."""
+    def model(prompt: str) -> str:
+        if "THE CRITIQUE:" in prompt:
+            return as_json({"kind": "new_core", "content": "The NUC stays on focal; jammy is out.",
+                            "rationale": "as the critique said"})
+        return _model(prompt)
+    h = make_hippo(model=model)
+    short(memory, "the nuc stays on focal", "nuc"); short(memory, "the nuc hates jammy", "nuc")
+    memory.post("/brief", json={"summary": "nuc talk", "promote_hints": ["nuc"], "noise_hints": []})
+    did = h.check()["sleep"]["draft_id"]
+    review(memory, did, [{"op": 0, "verdict": "deny", "critique": "Say both halves: focal stays, jammy is out."}])
+    h.tend()
+    pending = [d for d in h._mem.drafts(limit=50) if d["id"] != did and d.get("status") == "pending"]
+    assert pending, "the tend redrafted the denied operation"
+    review(memory, pending[0]["id"], [{"op": 0, "verdict": "approve"}])
+
+    plain, _ = consolidator_set(h, h._mem)
+    assert all("THE CRITIQUE:" not in r["messages"][0]["content"] for r in plain), "off by default"
+    rows, report = consolidator_set(h, h._mem, redrafts=True, keys=True)
+    red = [r for r in rows if r["source"] == "redraft"]
+    assert len(red) == 1 and red[0]["key"] == sorted(red[0]["key"])
+    ask, answer = red[0]["messages"]
+    assert ask["content"].startswith(h.voice.block() + h.REDRAFT_RULES + h.REDRAFT_AGING)
+    assert "Say both halves: focal stays, jammy is out." in ask["content"]
+    assert json.loads(answer["content"]) == {"kind": "new_core", "content": "The NUC stays on focal; jammy is out.",
+                                             "rationale": "No core covers this and it is worth keeping."}
+    assert report["operations_by_kind"].get("redraft new_core") == 1
